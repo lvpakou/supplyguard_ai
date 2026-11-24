@@ -73,6 +73,10 @@ def transfer_option(component: str, state: CaseState) -> Option:
              for key, cover in impact.days_of_cover.items() if cover > 0}
     stock = {warehouse: impact.usable_by_location.get(warehouse, 0) for warehouse in daily}
     sent = {warehouse: 0 for warehouse in daily}
+    if not daily:  # no plant uses the component this week, or no plant warehouse: nowhere to send
+        return Option(strategy="A", title="Transfer hub stock", feasible=False,
+                      rejected_because="No plant warehouse needs the component: nothing to transfer to.",
+                      evidence_ids=["structured/inventory.csv"])
     for _ in range(hub_units // 50):
         neediest = min(stock, key=lambda w: (stock[w] + sent[w]) / daily[w])
         sent[neediest] += 50
@@ -230,7 +234,8 @@ def build_options(state: CaseState) -> tuple[list[Option], Recommendation]:
         if isinstance(main.get("rejected_because"), str):
             purchase.feasible, purchase.rejected_because = False, main["rejected_because"]
         purchases.append(purchase)
-        remaining -= purchase.covered_units
+        if purchase.feasible:
+            remaining -= purchase.covered_units
 
     # Golden "plan 2": cover the rest from a supplier that shares the upstream (weak diversification).
     shared_option = None
@@ -245,7 +250,7 @@ def build_options(state: CaseState) -> tuple[list[Option], Recommendation]:
     uncovered = max(0, remaining)
     residual = []
     if uncovered:
-        days = uncovered / impact.daily_demand if impact.daily_demand else 0
+        days = uncovered / impact.daily_demand if impact.daily_demand else 0.0
         residual = [
             Option(strategy="D", title=f"Reallocate the last {uncovered:,} units to tier-1 customer orders",
                    uncovered_units=uncovered, evidence_ids=["structured/customer_orders.csv"]),
@@ -253,18 +258,24 @@ def build_options(state: CaseState) -> tuple[list[Option], Recommendation]:
                    uncovered_units=uncovered, evidence_ids=["structured/production_schedule.csv"]),
         ]
 
-    chosen = [o for o in [transfer, best_expedite, *purchases] if o is not None and o.actions]
+    # Only feasible options with actions go into the plan that is approved and executed.
+    # An infeasible one (e.g. a quantity above capacity) stays in all_options with its reason,
+    # and the critic reports it.
+    chosen = [o for o in [transfer, best_expedite, *purchases] if o is not None and o.actions and o.feasible]
+    not_feasible = [o for o in purchases if not o.feasible]
     total = round(sum(o.cost_eur for o in chosen), 2)
     cap = change.get("spending_cap_eur") or facts.spending_cap_eur
     summary = "; ".join(o.title for o in chosen) or "No feasible action found."
     if change:
         summary += f". Changed at the approval: {change}."
+    for option in not_feasible:
+        summary += f" NOT in the plan: {option.title} ({option.rejected_because})."
     recommendation = Recommendation(
         summary=summary,
         options=chosen,
         total_cost_eur=total,
         uncovered_units=uncovered,
-        residual_handling=(f"{uncovered:,} units (~{uncovered / impact.daily_demand:.1f} days of demand): "
+        residual_handling=(f"{uncovered:,} units (~{uncovered / max(impact.daily_demand, 1):.1f} days of demand): "
                            "reschedule production (E) or reallocate to tier-1 orders (D)"
                            + (f"; or {shared_option.title.split(':')[0]} for EUR {shared_option.cost_eur:,.0f}"
                               if shared_option else "")) if uncovered else None,

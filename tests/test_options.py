@@ -82,14 +82,34 @@ def test_every_payload_matches_the_procurement_contract(plan):
 # ---------------------------------------------------------------------------
 # A change at the approval (EV-0096: "change quantity to 6,000")
 # ---------------------------------------------------------------------------
-def test_change_quantity_builds_a_new_plan_and_flags_the_capacity():
-    _, rec = build_options(case({"qty": 6000}))
+def test_feasible_change_of_quantity_builds_a_new_plan():
+    _, rec = build_options(case({"qty": 2500}))
     purchase = by_title(rec.options, "Cordillera")
-    assert purchase.actions[0].payload["qty"] == 6000          # new payload -> new hash -> new approval
-    assert purchase.covered_units == 3000                       # only the monthly capacity counts
-    assert not purchase.feasible and "exceed the monthly capacity" in purchase.rejected_because
-    assert rec.total_cost_eur == pytest.approx(96 + 882 + 6000 * 9.80)
+    assert purchase.actions[0].payload["qty"] == 2500          # new payload -> new hash -> new approval
+    assert rec.total_cost_eur == pytest.approx(96 + 882 + 2500 * 9.80)
+    assert rec.uncovered_units == 5350 - 1500 - 2500
     assert "Changed at the approval" in rec.summary
+
+
+def test_quantity_above_capacity_is_kept_out_of_the_plan():
+    options, rec = build_options(case({"qty": 6000}))
+    purchase = by_title(options, "Buy 6,000 from Cordillera")
+    assert not purchase.feasible and "exceed the monthly capacity of 3,000" in purchase.rejected_because
+    assert purchase not in rec.options                          # can never be approved and executed
+    assert all(o.feasible for o in rec.options)
+    assert rec.total_cost_eur == 96 + 882                       # transfers + expedite only
+    assert rec.uncovered_units == 5350 - 1500                   # the purchase covers nothing
+    assert "NOT in the plan" in rec.summary
+
+
+def test_component_without_plant_demand_does_not_crash():
+    # EV-0004 (MC-276) used to crash in transfer_option: no plant warehouse to send to.
+    facts = IncidentFacts(supplier_id="S034", component_id="MC-276", delay_days=21)
+    state = CaseState(case_id="t", raw_text="x", facts=facts, impact=assess_impact(facts))
+    options, rec = build_options(state)
+    transfer = next(o for o in options if o.strategy == "A")
+    assert not transfer.actions and transfer.rejected_because
+    assert all(o.feasible for o in rec.options)
 
 
 def test_quantity_typed_in_the_note_is_understood():
@@ -98,9 +118,10 @@ def test_quantity_typed_in_the_note_is_understood():
 
 
 def test_change_supplier_to_borealis_is_built_but_not_allowed():
-    _, rec = build_options(case({"supplier_id": "S003"}))
-    purchase = by_title(rec.options, "Borealis")
+    options, rec = build_options(case({"supplier_id": "S003"}))
+    purchase = by_title(options, "Buy 3,500 from Borealis")  # its capacity
     assert not purchase.feasible and "certification" in purchase.rejected_because
+    assert purchase not in rec.options
 
 
 def test_lower_cap_is_reported():

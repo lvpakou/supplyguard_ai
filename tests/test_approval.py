@@ -89,13 +89,13 @@ def test_change_asks_again_and_approve_executes(fake_llm):
     who = {"user_id": "u-fc-01", "user_role": "finance_controller",
            "payload_hash": pending(first)["request"]["payload_hash"]}
 
-    changed = app.invoke(Command(resume={"decision": "change", "change": "qty 6000", **who}), config("case-decide"))
+    # 2,500 fits Cordillera's capacity, so the new plan keeps its 4 actions (6,000 would be left out).
+    changed = app.invoke(Command(resume={"decision": "change", "change": "qty 2500", **who}), config("case-decide"))
     assert pending(changed)["type"] == "approval"           # a change needs a new approval
     assert changed.get("executions", []) == []
 
     # The change built a new plan, so approve the NEW payload (the old hash no longer counts).
     who["payload_hash"] = pending(changed)["request"]["payload_hash"]
-
     approved = app.invoke(Command(resume={"decision": "approve", "change": None, **who}), config("case-decide"))
     assert approved["approval"].status == "approved"
     assert [e.status for e in approved["executions"]] == ["done"] * 4
