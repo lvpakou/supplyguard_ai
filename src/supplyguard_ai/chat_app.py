@@ -26,6 +26,7 @@ from supplyguard_ai.auth import document_scopes, users
 from supplyguard_ai.config import database_url
 from supplyguard_ai.graph import build_graph, make_async_checkpointer
 from supplyguard_ai.state import ApprovalRequest
+from supplyguard_ai.tracing import run_config
 
 DECISIONS = (("approve", "✅ Approve"), ("reject", "❌ Reject"), ("change", "✏️ Change"))
 
@@ -46,7 +47,8 @@ def no_chainlit_history():
 
 
 def _config(thread_id: str) -> dict:
-    return {"configurable": {"thread_id": thread_id}}
+    # thread_id + the run name, tag and metadata LangSmith shows (tracing.py)
+    return run_config(thread_id, "chat")
 
 
 # ---------------------------------------------------------------------------
