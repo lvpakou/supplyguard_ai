@@ -59,3 +59,7 @@ stub inside your module; keep the signature. Need a change in `state.py` or a ne
 `evaluation/` golden scenario + 105 cases · `config/` policies, users, procurement contract · `external_service/` risk feed.
 See `data/README.md` for the planted traps (reserved/quarantined stock, expired certificate, shared upstream,
 conflicting sources, prompt injection, ambiguous "Atlas").
+
+## Seed Neo4j
+run : docker compose up -d neo4j
+and then: uv run python scripts/load_graph.py
