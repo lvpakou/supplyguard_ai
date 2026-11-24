@@ -14,7 +14,8 @@ after a restart. Typed text never decides an approval.
 Follow-ups: a question typed while the approval waits, or after the decision, is answered from
 the saved case (followup.py); the answer is shown and the case keeps waiting where it was.
 
-Still to come (role 5): evidence display, options table.
+Investigation: before each new approval request, three messages show the impact, the evidence
+with clickable sources and resolved conflicts, and the recovery options compared (chat_views.py).
 """
 
 import hmac
@@ -25,6 +26,7 @@ import chainlit as cl
 from langgraph.types import Command
 
 from supplyguard_ai import approval as approvals
+from supplyguard_ai import chat_views as views
 from supplyguard_ai.auth import document_scopes, users
 from supplyguard_ai.config import database_url
 from supplyguard_ai.graph import arecent_cases, build_graph, is_resume_request, make_async_checkpointer
@@ -200,7 +202,7 @@ async def on_open_case(action: cl.Action) -> None:
         await cl.Message("That case is not waiting for your role any more.").send()
         return
     cl.user_session.set("thread_id", case_id)
-    await show_case(case_id)
+    await show_case(case_id, details=True)  # the second approver sees the whole investigation
 
 
 @cl.action_callback("decide")
@@ -265,25 +267,37 @@ async def run(graph_input, thread_id: str) -> None:
         note = "\n\n_The approval request above is still waiting for a decision._" if request else ""
         await cl.Message(followups[-1].answer + note).send()
         return
-    await show(snapshot.values, snapshot.interrupts)
+    await show(snapshot.values, snapshot.interrupts, details=request is not None and request != waiting)
 
 
-async def show_case(thread_id: str) -> None:
+async def show_case(thread_id: str, details: bool = False) -> None:
     snapshot = await (await get_graph()).aget_state(_config(thread_id))
-    await show(snapshot.values, snapshot.interrupts)
+    await show(snapshot.values, snapshot.interrupts, details)
 
 
-async def show(values: dict, interrupts) -> None:
+async def show(values: dict, interrupts, details: bool = False) -> None:
+    """Where the case stopped. details: also the investigation before an approval request."""
     payload = interrupts[0].value if interrupts else None
     if payload is None:
         return
     if payload["type"] == "clarification":
         await cl.Message(payload["question"]).send()
     elif payload["type"] == "approval":
+        if details:
+            await show_investigation(values)
         await show_approval(values, ApprovalRequest(**payload["request"]))
     elif payload["type"] == "followup" and values.get("report"):
         # Answers are shown by run() as they come; here the case is closed: show its report.
         await cl.Message(values["report"] + "\n\n_Ask a follow-up question, or type **new**._").send()
+
+
+async def show_investigation(values: dict) -> None:
+    """Impact, evidence (each source opens its document in the side panel), options compared."""
+    documents = [cl.Text(name=e.source_id, content=e.claim, display="side") for e in views.documents(values)]
+    for text, elements in ((views.impact_view(values), []), (views.evidence_view(values), documents),
+                           (views.options_view(values), [])):
+        if text:
+            await cl.Message(text, elements=elements).send()
 
 
 async def show_approval(values: dict, request: ApprovalRequest) -> None:
@@ -298,27 +312,29 @@ async def show_approval(values: dict, request: ApprovalRequest) -> None:
     actions = [a for option in rec.options for a in option.actions]
     lines += [f"| {i} | {approvals.describe(a)} | {a.cost_eur:,.2f} |" for i, a in enumerate(actions, 1)]
     lines += [f"| | **Total** | **{request.total_cost_eur:,.2f}** |", ""]
+    # One bullet per line: markdown would join plain consecutive lines into one paragraph.
     if facts:
-        lines.append(f"Spending cap: EUR {facts.spending_cap_eur:,.0f}")
+        lines.append(f"- Spending cap: EUR {facts.spending_cap_eur:,.0f}")
     if rec.uncovered_units:
-        lines.append(f"Not covered by this plan: {rec.uncovered_units} units")
+        lines.append(f"- Not covered by this plan: {rec.uncovered_units} units")
     evidence = sorted({e for option in rec.options for e in option.evidence_ids})
     if evidence:
-        lines.append("Evidence: " + ", ".join(evidence))
+        lines.append("- Evidence: " + ", ".join(evidence))
     if values.get("critique"):
-        lines += ["", "**Challenge findings:**"] + [f"- 🔎 {finding}" for finding in values["critique"]]
-    lines += [f"⚠️ {warning}" for warning in values.get("warnings", [])]
+        lines += ["", "**Challenge findings:**", ""] + [f"- 🔎 {finding}" for finding in values["critique"]]
+    if values.get("warnings"):
+        lines += ["", "**Warnings:**", ""] + [f"- ⚠️ {warning}" for warning in values["warnings"]]
 
     roles = approvals.required_roles(request.approver_role)
     missing = approvals.missing_signoffs(request, await cl.make_async(approvals.decisions)(request.approval_id))
-    lines.append("\n**Approval needed from:** " + (" and ".join(roles) or "nobody: above every approval tier"))
+    lines += ["", "- **Approval needed from:** " + (" and ".join(roles) or "nobody: above every approval tier")]
     if roles and len(missing) < len(roles):
-        lines.append("Already approved by: " + ", ".join(r for r in roles if r not in missing))
-    lines.append(f"_Payload {request.payload_hash}. Nothing is ordered before approval; "
-                 "any change needs a new approval._")
+        lines.append("- Already approved by: " + ", ".join(r for r in roles if r not in missing))
+    lines += ["", f"_Payload {request.payload_hash}. Nothing is ordered before approval; "
+                  "any change needs a new approval._"]
 
     buttons = [cl.Action(name="decide", label=label, payload={"decision": d, "payload_hash": request.payload_hash})
                for d, label in DECISIONS if approvals.can_decide(role, request, d)]
     if not buttons:
-        lines.append(f"_Your role ({role}) cannot decide this request._")
+        lines += ["", f"_Your role ({role}) cannot decide this request._"]
     await cl.Message("\n".join(lines), actions=buttons).send()
