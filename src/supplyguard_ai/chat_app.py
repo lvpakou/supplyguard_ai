@@ -34,19 +34,29 @@ def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
+def route_message(thread_id: str | None, text: str) -> tuple[str | None, object | None, str | None]:
+    """Decide what one chat message means: (thread_id to keep, graph input, reply).
+
+    - "new"            -> forget the open case; the NEXT message starts a new one
+    - no open case     -> this message starts a new case
+    - an open case     -> this message answers the paused step (resume)
+    """
+    if text.strip().lower() == "new":
+        return None, None, "OK, describe the next disruption."
+    if thread_id is None:
+        thread_id = str(uuid.uuid4())
+        return thread_id, {"case_id": thread_id, "raw_text": text}, None
+    return thread_id, Command(resume=text), None
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    thread_id = cl.user_session.get("thread_id")
-    if thread_id is None or message.content.strip().lower() == "new":
-        thread_id = str(uuid.uuid4())
-        cl.user_session.set("thread_id", thread_id)
-        if message.content.strip().lower() == "new":
-            await cl.Message("OK, describe the next disruption.").send()
-            return
-        graph_input = {"case_id": thread_id, "raw_text": message.content}
-    else:
-        graph_input = Command(resume=message.content)
-    await run(graph_input, thread_id)
+    thread_id, graph_input, reply = route_message(cl.user_session.get("thread_id"), message.content)
+    cl.user_session.set("thread_id", thread_id)
+    if reply:
+        await cl.Message(reply).send()
+    if graph_input is not None:
+        await run(graph_input, thread_id)
 
 
 @cl.action_callback("decide")
