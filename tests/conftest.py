@@ -80,4 +80,10 @@ def no_real_contract_agent(monkeypatch):
     """Graph tests never call Azure for the contract agent (tests/test_contract_agent.py tests it directly)."""
     monkeypatch.setattr(nodes, "analyze_contracts", lambda *args, **kwargs: [])
 
+
+@pytest.fixture(autouse=True)
+def no_real_investigator(monkeypatch):
+    """Graph tests never call Azure for the Deep Agent (tests/test_investigator.py tests it directly)."""
+    monkeypatch.setattr(nodes, "investigate", lambda *args, **kwargs: [])
+
     
