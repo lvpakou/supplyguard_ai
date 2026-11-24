@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
-FEED_PATH = Path(os.environ.get("RISK_FEED_PATH", BASE_DIR.parent / "external_service" / "risk_feed.json"))
+FEED_PATH = Path(os.environ.get("RISK_FEED_PATH") or BASE_DIR.parent / "external_service" / "risk_feed.json")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
 
 logging.basicConfig(level=logging.INFO)
@@ -43,8 +43,10 @@ def load_feed():
 
     if not isinstance(feed, dict) or not isinstance(feed.get("alerts"), list):
         raise ValueError("Invalid risk feed: alerts must be a list")
-    if not all(isinstance(alert, dict) and isinstance(alert.get("region"), str) for alert in feed["alerts"]):
-        raise ValueError("Invalid risk feed: every alert needs a region")
+    # The app and the MCP server read region, severity and text of every alert.
+    if not all(isinstance(alert, dict) and all(isinstance(alert.get(key), str) for key in ("region", "severity", "text"))
+               for alert in feed["alerts"]):
+        raise ValueError("Invalid risk feed: every alert needs region, severity and text")
 
     logger.info(
         "Loaded %d alerts (generated: %s)",
@@ -79,7 +81,7 @@ class ExternalInfoHandler(BaseHTTPRequestHandler):
     def do_GET(self):
 
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip("/") or "/"   # "/alerts/" works like "/alerts"
 
         # Health check
         if path == "/health":
