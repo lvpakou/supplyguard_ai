@@ -46,7 +46,9 @@ def test_a_question_at_the_approval_is_answered_and_never_counts_as_a_reject(fak
 
 def test_approve_after_a_change_clears_it_and_executes(fake_llm):
     app = at_approval(fake_llm, "case-change-approve")
-    app.invoke(Command(resume={"decision": "change", "qty": 6000}), config("case-change-approve"))
+    # 2,500 fits Cordillera's capacity (3,000), so the new plan keeps its 4 actions.
+    # (6,000 would be left out of the plan as not feasible: see tests/test_options.py.)
+    app.invoke(Command(resume={"decision": "change", "qty": 2500}), config("case-change-approve"))
 
     result = app.invoke(Command(resume="approve"), config("case-change-approve"))
 

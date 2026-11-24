@@ -36,6 +36,15 @@ class FakeLLM:
         return self.answers[len(self.calls) - 1]
 
 
+@pytest.fixture(autouse=True)
+def no_mcp_servers(monkeypatch):
+    """Fast tests never write to the real procurement system: in-memory fake, HTTP risk feed."""
+    # Empty, not deleted: some modules call load_dotenv() again, which would bring back
+    # a deleted variable from .env, but never overwrites one that is set.
+    monkeypatch.setenv("PROCUREMENT_MCP_URL", "")
+    monkeypatch.setenv("RISK_MCP_URL", "")
+
+
 @pytest.fixture
 def fake_llm(monkeypatch):
     def install(*answers):
@@ -58,3 +67,10 @@ def no_real_search(monkeypatch):
     """
     monkeypatch.setattr(nodes, "search_documents", lambda *args, **kwargs: [])
 
+
+@pytest.fixture(autouse=True)
+def no_real_memory(monkeypatch):
+    """Graph tests never read or write incident memories in the real database (memory.py is tested directly)."""
+    monkeypatch.setattr(nodes, "save_resolution", lambda state: None)
+    monkeypatch.setattr(nodes, "similar_cases", lambda *args, **kwargs: [])
+    
