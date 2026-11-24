@@ -28,7 +28,8 @@ from supplyguard_ai.report import build_report
 from supplyguard_ai.state import CaseState, Clarification, FollowUp, IncidentFacts
 from supplyguard_ai.tools import critic, guards
 from supplyguard_ai.tools.graph_queries import alternatives
-from supplyguard_ai.tools.impact import assess_impact
+from supplyguard_ai.tools.impact import assess_impact, delayed_delivery
+from supplyguard_ai.tools.inventory import usable_stock
 from supplyguard_ai.tools.options import build_options
 from supplyguard_ai.tools.retrieval import find_conflicts, search_documents
 
@@ -130,10 +131,19 @@ def clarify(state: CaseState) -> dict:
 
 
 def impact(state: CaseState) -> dict:
+    """Role 2's calculations, plus the data problems they found (stale counts, tables that
+    disagree, no open PO for the delay), so the chat and the report can show them."""
+    facts = state.facts
     try:
-        return {"impact": assess_impact(state.facts)}
+        summary = assess_impact(facts)
     except NotImplementedError as error:  # a stub that only knows MC-17
         return {"warnings": state.warnings + [f"Impact not calculated: {error}"]}
+    found = list(usable_stock(facts.component_id)["warnings"])
+    delivery = delayed_delivery(facts.supplier_id, facts.component_id, facts.delay_days or 0)
+    if delivery["warning"]:
+        found.append(delivery["warning"])
+    new = [w for w in found if w not in state.warnings]   # no duplicates after a change round
+    return {"impact": summary, "warnings": state.warnings + new}
 
 
 def evidence(state: CaseState) -> dict:
