@@ -21,9 +21,11 @@ from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
+import psycopg
 from langchain_openai import AzureOpenAIEmbeddings
 
-from supplyguard_ai.config import data_dir, require
+from supplyguard_ai.auth import scopes_for_role
+from supplyguard_ai.config import data_dir, database_url, require
 from supplyguard_ai.state import Conflict, Evidence
 
 # ---------------------------------------------------------------------------
@@ -115,10 +117,72 @@ def to_pgvector(vector: list[float]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search (next step: still stubs)
+# Search
 # ---------------------------------------------------------------------------
+# Filters a caller may use, and the column each one reads. A whitelist: the key ends
+# up in the SQL text, so only names from this dict are ever accepted.
+_FILTER_COLUMNS = {"doc_type": "doc_type", "supplier_id": "supplier_id", "base_id": "base_id"}
+
+_SEARCH_SQL = """
+WITH latest AS (                                -- 1. newest version of every document
+    SELECT DISTINCT ON (base_id) *
+    FROM {table}
+    ORDER BY base_id, version DESC, effective_date DESC
+)
+SELECT source_id, doc_type, title, version, effective_date, access_scope, content,
+       1 - (embedding <=> %(query)s::vector) AS score
+FROM latest
+WHERE access_scope = ANY(%(scopes)s)            -- 2. only what this role may read
+  AND status <> 'superseded'
+  {filters}                                     -- 3. optional filters (doc_type, supplier)
+ORDER BY embedding <=> %(query)s::vector        -- 4. most similar first
+LIMIT %(k)s
+"""
+
+
+def _filter_sql(filters: dict | None) -> tuple[str, dict]:
+    """{'doc_type': 'contract', 'supplier_id': ['S002', 'S004']} -> SQL + parameters."""
+    clauses, params = [], {}
+    for key, value in (filters or {}).items():
+        if key not in _FILTER_COLUMNS:
+            raise ValueError(f"Unknown filter {key!r}; allowed: {sorted(_FILTER_COLUMNS)}")
+        params[f"f_{key}"] = [value] if isinstance(value, str) else list(value)
+        clauses.append(f"AND {_FILTER_COLUMNS[key]} = ANY(%(f_{key})s)")
+    return " ".join(clauses), params
+
+
+def _connect() -> psycopg.Connection:
+    url = database_url()
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set. Copy .env.example to .env.")
+    return psycopg.connect(url)
+
+
 def search_documents(query: str, user_role: str, filters: dict | None = None, k: int = 5) -> list[Evidence]:
-    return []
+    """Top-k documents for the query that this role may read, newest version only.
+
+    The text is returned as it is: the caller runs guards.check_injection() on every
+    claim before an LLM sees it.
+    """
+    where, params = _filter_sql(filters)        # before any I/O: a bad filter fails at once
+    params |= {
+        "query": to_pgvector(get_embeddings().embed_query(query)),
+        "scopes": scopes_for_role(user_role),
+        "k": max(1, min(k, 20)),
+    }
+    with _connect() as conn:
+        rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
+    return [
+        Evidence(
+            claim=f"{title}\n{content}",
+            source_id=source_id,
+            doc_type=doc_type,
+            version=str(version),
+            effective_date=effective_date.isoformat(),
+            access_scope=access_scope,
+        )
+        for source_id, doc_type, title, version, effective_date, access_scope, content, _score in rows
+    ]
 
 
 def find_conflicts(evidence: list[Evidence]) -> list[Conflict]:

@@ -3,8 +3,11 @@
 from collections import Counter
 
 import pytest
+import psycopg
 
-from supplyguard_ai.tools.retrieval import load_documents
+from supplyguard_ai.auth import scopes_for_role
+from supplyguard_ai.config import database_url
+from supplyguard_ai.tools.retrieval import get_embeddings, load_documents, search_documents
 
 
 @pytest.fixture(scope="module")
@@ -49,3 +52,64 @@ def test_titles_with_colons_and_empty_supplier(docs):
 def test_hidden_text_is_not_dropped(docs):
     # The injection guard (role 5) can only report what retrieval keeps.
     assert "<!--" in docs["DOC-NOT-HELIOS-PRICE"]["content"]
+
+
+# --- roles: no services needed ---------------------------------------------
+def test_scopes_for_role():
+    assert scopes_for_role("viewer") == ["public"]
+    assert "finance-confidential" in scopes_for_role("finance_controller")
+    assert "finance-confidential" not in scopes_for_role("procurement_manager")
+    assert scopes_for_role("someone_new") == ["public"]      # unknown role: least access
+
+
+def test_unknown_filter_is_refused():
+    with pytest.raises(ValueError):
+        search_documents("x", "procurement_manager", filters={"title; DROP TABLE": "x"})
+
+
+# --- search: needs docker compose up -d, the index, and Azure keys in .env --
+def _index_ready() -> bool:
+    try:
+        with psycopg.connect(database_url(), connect_timeout=3) as conn:
+            conn.execute("SELECT 1 FROM documents LIMIT 1")
+        get_embeddings()                                      # fails if Azure settings are missing
+        return True
+    except Exception:
+        return False
+
+
+live = pytest.mark.skipif(not _index_ready(), reason="needs the services, the index and Azure keys")
+
+
+def ids(results):
+    return [r.source_id for r in results]
+
+
+@live
+def test_viewer_sees_only_public_documents():
+    results = search_documents("Helios MC-17 price capacity contract", "viewer", k=10)
+    assert results and {r.access_scope for r in results} == {"public"}
+
+
+@live
+def test_finance_sheet_only_for_the_finance_controller():
+    query = "margin and penalty rate sheet by customer tier"
+    assert "DOC-FIN-01-v1" not in ids(search_documents(query, "procurement_manager", k=10))
+    assert "DOC-FIN-01-v1" in ids(search_documents(query, "finance_controller", k=10))
+
+
+@live
+def test_only_the_newest_atlas_contract():
+    results = search_documents("Atlas Components contract lead time capacity", "procurement_manager",
+                               filters={"doc_type": "contract"}, k=10)
+    assert "DOC-CON-S001-v3" in ids(results)
+    assert "DOC-CON-S001-v2" not in ids(results)
+
+
+@live
+def test_supplier_filter():
+    results = search_documents("contract capacity", "procurement_manager",
+                               filters={"supplier_id": "S002"}, k=10)
+    assert "DOC-CON-S002-v1" in ids(results)
+    assert "DOC-CON-S001-v3" not in ids(results)
+    
