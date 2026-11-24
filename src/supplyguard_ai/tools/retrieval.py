@@ -113,29 +113,69 @@ def to_pgvector(vector: list[float]) -> str:
     """A vector as pgvector text ('[0.1,0.2,...]'), used with %s::vector in SQL."""
     return "[" + ",".join(str(x) for x in vector) + "]"
 
-
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
+# Which search search_documents() uses. The benchmark (scripts/benchmark_retrieval.py)
+# decides the default; RETRIEVAL_MODE in .env can override it.
+SEARCH_MODES = ("hybrid", "pgvector", "chroma")
+DEFAULT_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
+
+# _confident: if even the best document is less similar than this, we have no reliable
+# source and return nothing. Calibrated with the benchmark (on-topic vs off-topic questions).
+MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.30"))
+
+_RRF_K = 60          # reciprocal rank fusion constant (the usual value)
+_CANDIDATES = 50     # how many documents each side of the hybrid ranks before fusing
+
 # Filters a caller may use, and the column each one reads. A whitelist: the key ends
 # up in the SQL text, so only names from this dict are ever accepted.
 _FILTER_COLUMNS = {"doc_type": "doc_type", "supplier_id": "supplier_id", "base_id": "base_id"}
 
-_SEARCH_SQL = """
+_VISIBLE_SQL = """
 WITH latest AS (                                -- 1. newest version of every document
     SELECT DISTINCT ON (base_id) *
     FROM {table}
     ORDER BY base_id, version DESC, effective_date DESC
-)
+),
+visible AS (                                    -- 2. what this role may read (+ filters)
+    SELECT * FROM latest
+    WHERE access_scope = ANY(%(scopes)s) AND status <> 'superseded' {filters}
+)"""
+
+_VECTOR_SQL = _VISIBLE_SQL + """
 SELECT source_id, doc_type, title, version, effective_date, access_scope, content,
-       1 - (embedding <=> %(query)s::vector) AS score
-FROM latest
-WHERE access_scope = ANY(%(scopes)s)            -- 2. only what this role may read
-  AND status <> 'superseded'
-  {filters}                                     -- 3. optional filters (doc_type, supplier)
-ORDER BY embedding <=> %(query)s::vector        -- 4. most similar first
-LIMIT %(k)s
-"""
+       1 - (embedding <=> %(query)s::vector) AS similarity
+FROM visible
+ORDER BY embedding <=> %(query)s::vector        -- 3. most similar meaning first
+LIMIT %(k)s"""
+
+_HYBRID_SQL = _VISIBLE_SQL + """,
+terms AS (                                      -- ALL the question's words must match: the keyword
+    SELECT plainto_tsquery('english', %(text)s) AS q   -- side only speaks for exact IDs and names
+),
+semantic AS (                                   -- 3a. ranked by meaning (pgvector)
+    SELECT source_id, row_number() OVER (ORDER BY embedding <=> %(query)s::vector) AS rank
+    FROM visible
+    ORDER BY embedding <=> %(query)s::vector
+    LIMIT %(candidates)s
+),
+keyword AS (                                    -- 3b. ranked by exact words (Postgres full text)
+    SELECT v.source_id, row_number() OVER (ORDER BY ts_rank_cd(v.tsv, t.q) DESC) AS rank
+    FROM visible v, terms t
+    WHERE v.tsv @@ t.q
+    ORDER BY ts_rank_cd(v.tsv, t.q) DESC
+    LIMIT %(candidates)s
+)
+SELECT v.source_id, v.doc_type, v.title, v.version, v.effective_date, v.access_scope, v.content,
+       1 - (v.embedding <=> %(query)s::vector) AS similarity
+FROM visible v
+LEFT JOIN semantic s ON s.source_id = v.source_id
+LEFT JOIN keyword kw ON kw.source_id = v.source_id
+WHERE s.rank IS NOT NULL OR kw.rank IS NOT NULL
+ORDER BY coalesce(1.0 / (%(rrf)s + s.rank), 0)      -- 4. reciprocal rank fusion:
+       + coalesce(1.0 / (%(rrf)s + kw.rank), 0) DESC  --    good in either list = high
+LIMIT %(k)s"""
 
 
 def _filter_sql(filters: dict | None) -> tuple[str, dict]:
@@ -156,25 +196,91 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(url)
 
 
-def search_documents(query: str, user_role: str, filters: dict | None = None, k: int = 5) -> list[Evidence]:
-    """Top-k documents for the query that this role may read, newest version only.
+@lru_cache
+def _newest_versions() -> dict[str, int]:
+    """base_id -> newest version in the whole corpus (whoever may read it)."""
+    newest: dict[str, int] = {}
+    for doc in load_documents():
+        newest[doc["base_id"]] = max(newest.get(doc["base_id"], 0), doc["version"])
+    return newest
 
-    The text is returned as it is: the caller runs guards.check_injection() on every
-    claim before an LLM sees it.
-    """
+
+def _chroma_where(scopes: list[str], filters: dict | None) -> dict:
+    """The same rules as the SQL, as a Chroma metadata filter."""
+    conditions = [{"access_scope": {"$in": scopes}}, {"status": {"$ne": "superseded"}}]
+    for key, value in (filters or {}).items():        # keys already checked by _filter_sql
+        conditions.append({key: {"$in": [value] if isinstance(value, str) else list(value)}})
+    return {"$and": conditions}
+
+
+def _search_chroma(vector: list[float], scopes: list[str], filters: dict | None, k: int) -> list[tuple]:
+    collection = chroma_client().get_collection(CHROMA_COLLECTION)
+    result = collection.query(query_embeddings=[vector], n_results=k + 5,
+                              where=_chroma_where(scopes, filters),
+                              include=["documents", "metadatas", "distances"])
+    rows = []
+    for meta, text, distance in zip(result["metadatas"][0], result["documents"][0], result["distances"][0]):
+        # Chroma has no DISTINCT ON: drop any version older than the newest one in the corpus,
+        # even when the newest is not visible to this role (no fallback to a stale version).
+        if meta["version"] < _newest_versions()[meta["base_id"]]:
+            continue
+        rows.append((meta["source_id"], meta["doc_type"], meta["title"], meta["version"],
+                     date.fromisoformat(meta["effective_date"]), meta["access_scope"], text, 1 - distance))
+    return rows[:k]
+
+
+@lru_cache(maxsize=256)
+def _embed_query(text: str) -> tuple[float, ...]:
+    """Query vectors, cached: the evidence step searches the same text once per supplier."""
+    return tuple(get_embeddings().embed_query(text))
+
+
+def _search(query: str, user_role: str, filters: dict | None = None, k: int = 5,
+            mode: str | None = None, vector: list[float] | None = None) -> list[tuple]:
+    """Raw search in one mode: rows of (source_id, doc_type, title, version, effective_date,
+    access_scope, content, similarity). Used by search_documents and the benchmark."""
+    mode = mode or DEFAULT_MODE
+    if mode not in SEARCH_MODES:
+        raise ValueError(f"Unknown search mode {mode!r}; allowed: {SEARCH_MODES}")
     where, params = _filter_sql(filters)        # before any I/O: a bad filter fails at once
-    params |= {
-        "query": to_pgvector(get_embeddings().embed_query(query)),
-        "scopes": scopes_for_role(user_role),
-        "k": max(1, min(k, 20)),
-    }
+    vector = vector or list(_embed_query(query))
+    scopes = scopes_for_role(user_role)
+    k = max(1, min(k, 20))
+    if mode == "chroma":
+        return _search_chroma(vector, scopes, filters, k)
+
+    sql = _HYBRID_SQL if mode == "hybrid" else _VECTOR_SQL
+    params |= {"query": to_pgvector(vector), "text": query, "scopes": scopes, "k": k,
+               "candidates": _CANDIDATES, "rrf": _RRF_K}
     with _connect() as conn:
         try:
-            rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
+            return conn.execute(sql.format(table=PG_TABLE, filters=where), params).fetchall()
         except psycopg.errors.UndefinedTable:
             raise RuntimeError(f"The document index '{PG_TABLE}' does not exist yet. "
                                "Run once: uv run python scripts/index_documents.py") from None
-        return [
+
+
+def _confident(rows: list[tuple]) -> list[tuple]:
+    """HelpDesk Lite's rule: if even the best match is weak, say 'no reliable source'
+    (return nothing) instead of handing weak documents to the LLM."""
+    if not rows or max(row[-1] for row in rows) < MIN_SIMILARITY:
+        return []
+    return rows
+
+
+def search_documents(query: str, user_role: str, filters: dict | None = None, k: int = 5) -> list[Evidence]:
+    """Top-k documents for the query that this role may read, newest version only.
+
+    Without filters (an open question) the confidence threshold applies: weak matches mean
+    "no reliable source". With filters the caller already named what it wants (e.g. one
+    supplier's documents), so they are returned even if the wording is a weak match.
+    The text is returned as it is: the caller runs guards.check_injection() on every
+    claim before an LLM sees it.
+    """
+    rows = _search(query, user_role, filters, k)
+    if not filters:
+        rows = _confident(rows)
+    return [
         Evidence(
             claim=f"{title}\n{content}",
             source_id=source_id,
@@ -183,7 +289,7 @@ def search_documents(query: str, user_role: str, filters: dict | None = None, k:
             effective_date=effective_date.isoformat(),
             access_scope=access_scope,
         )
-        for source_id, doc_type, title, version, effective_date, access_scope, content, _score in rows
+        for source_id, doc_type, title, version, effective_date, access_scope, content, _similarity in rows
     ]
 
 

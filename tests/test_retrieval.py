@@ -8,6 +8,7 @@ import psycopg
 from supplyguard_ai.state import Evidence
 from supplyguard_ai.auth import scopes_for_role
 from supplyguard_ai.config import database_url
+from supplyguard_ai.tools import retrieval
 from supplyguard_ai.tools.retrieval import get_embeddings, load_documents, search_documents, extract_facts, find_conflicts
 
 
@@ -154,4 +155,90 @@ def test_non_supplier_documents_are_ignored():
 def test_contract_notice_clause_is_not_a_delay(docs):
     # clause 8 "any expected delay exceeding 3 days" is a rule, not a delay
     assert "delay_days" not in extract_facts(docs["DOC-CON-S001-v3"])
+
+
+# --- step 4: modes, hybrid, confidence --------------------------------------
+def test_unknown_mode_is_refused():
+    with pytest.raises(ValueError):
+        retrieval._search("x", "procurement_manager", mode="bm25")
+
+
+def test_chroma_filter_has_the_same_rules():
+    where = retrieval._chroma_where(["public"], {"supplier_id": "S002"})
+    assert {"access_scope": {"$in": ["public"]}} in where["$and"]
+    assert {"status": {"$ne": "superseded"}} in where["$and"]
+    assert {"supplier_id": {"$in": ["S002"]}} in where["$and"]
+
+
+def test_newest_versions_come_from_the_files():
+    assert retrieval._newest_versions()["DOC-CON-S001"] == 3
+
+
+def _row(similarity):
+    return ("DOC-X", "contract", "t", 1, None, "procurement", "text", similarity)
+
+
+def test_confident_keeps_all_or_nothing(monkeypatch):
+    monkeypatch.setattr(retrieval, "MIN_SIMILARITY", 0.5)
+    assert len(retrieval._confident([_row(0.8), _row(0.2)])) == 2   # best is strong: keep the list
+    assert retrieval._confident([_row(0.4), _row(0.3)]) == []        # best is weak: no reliable source
+    assert retrieval._confident([]) == []
+
+
+def _chroma_ready() -> bool:
+    try:
+        retrieval.chroma_client().get_collection(retrieval.CHROMA_COLLECTION)
+        return True
+    except Exception:
+        return False
+
+
+needs_chroma = pytest.mark.skipif(not _chroma_ready(), reason="needs ChromaDB and the index")
+MODES = [pytest.param("pgvector", marks=live), pytest.param("hybrid", marks=live),
+         pytest.param("chroma", marks=[live, needs_chroma])]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_every_mode_keeps_the_rules(mode):
+    viewer = retrieval._search("Helios MC-17 price capacity contract", "viewer", k=10, mode=mode)
+    assert viewer and {row[5] for row in viewer} == {"public"}
+    atlas = [row[0] for row in retrieval._search("Atlas Components contract lead time", "procurement_manager",
+                                               filters={"doc_type": "contract"}, k=10, mode=mode)]
+    assert "DOC-CON-S001-v3" in atlas and "DOC-CON-S001-v2" not in atlas
+    finance = [row[0] for row in retrieval._search("margin and penalty rate sheet", "procurement_manager",
+                                                 k=20, mode=mode)]
+    assert "DOC-FIN-01-v1" not in finance
+
+
+@live
+def test_hybrid_finds_an_exact_certificate_number():
+    top3 = [row[0] for row in retrieval._search("CERT-S003-72388", "procurement_manager", k=3, mode="hybrid")]
+    assert "DOC-QUA-S003-v1" in top3
+
+
+@live
+def test_off_topic_question_finds_nothing():
+    assert search_documents("A recipe for moussaka", "procurement_manager") == []
+
+def test_query_vectors_are_cached(monkeypatch):
+    calls = []
+
+    class FakeEmbeddings:
+        def embed_query(self, text):
+            calls.append(text)
+            return [1.0, 0.0]
+
+    monkeypatch.setattr(retrieval, "get_embeddings", lambda: FakeEmbeddings())
+    retrieval._embed_query.cache_clear()
+    retrieval._embed_query("same text")
+    retrieval._embed_query("same text")
+    assert calls == ["same text"]                 # Azure asked once
+    retrieval._embed_query.cache_clear()          # don't leak the fake vector into other tests
+
+
+@live
+def test_supplier_filter_skips_the_confidence_threshold(monkeypatch):
+    monkeypatch.setattr(retrieval, "MIN_SIMILARITY", 0.99)        # nothing is that similar
+    assert search_documents("delay capacity fee", "procurement_manager", filters={"supplier_id": "S002"})
+    assert search_documents("delay capacity fee", "procurement_manager") == []
 
