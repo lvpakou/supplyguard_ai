@@ -24,7 +24,7 @@ from langgraph.types import Command
 from supplyguard_ai import approval as approvals
 from supplyguard_ai.auth import document_scopes, users
 from supplyguard_ai.config import database_url
-from supplyguard_ai.graph import build_graph, make_async_checkpointer
+from supplyguard_ai.graph import arecent_cases, build_graph, is_resume_request, make_async_checkpointer
 from supplyguard_ai.state import ApprovalRequest
 from supplyguard_ai.tracing import run_config
 
@@ -114,6 +114,9 @@ def route_message(thread_id: str | None, text: str) -> tuple[str | None, object 
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    if is_resume_request(message.content):  # "Resume the case I was reviewing yesterday"
+        await show_saved_cases()
+        return
     thread_id, graph_input, reply = route_message(cl.user_session.get("thread_id"), message.content)
     cl.user_session.set("thread_id", thread_id)
     if reply:
@@ -127,6 +130,36 @@ async def on_message(message: cl.Message) -> None:
         return
     if graph_input is not None:
         await run(graph_input, thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Resuming a saved case (role 1: graph.recent_cases). Cases are in the Postgres
+# checkpointer, so this also works the next day and after a restart.
+# ---------------------------------------------------------------------------
+async def show_saved_cases() -> None:
+    user_id, _ = _user()
+    cases = await arecent_cases(await get_graph(), user_id=user_id)
+    if not cases:
+        await cl.Message("You have no saved cases yet. Describe a supply disruption to start one.").send()
+        return
+    lines = ["**Your recent cases** (newest first):"]
+    lines += [f"- {c['updated']} · {c['request']} · _{c['status']}_" for c in cases]
+    buttons = [cl.Action(name="resume_case", label=f"Open {c['case_id'][:8]}", payload={"case_id": c["case_id"]})
+               for c in cases]
+    await cl.Message("\n".join(lines), actions=buttons).send()
+
+
+@cl.action_callback("resume_case")
+async def on_resume_case(action: cl.Action) -> None:
+    user_id, _ = _user()
+    case_id = action.payload["case_id"]
+    if case_id not in [c["case_id"] for c in await arecent_cases(await get_graph(), user_id=user_id)]:
+        await cl.Message("That case is not one of yours.").send()   # never trust the button
+        return
+    cl.user_session.set("thread_id", case_id)
+    snapshot = await (await get_graph()).aget_state(_config(case_id))
+    await cl.Message(f"Resumed case {case_id[:8]}: {snapshot.values.get('raw_text', '')}").send()
+    await show_case(case_id)
 
 
 # ---------------------------------------------------------------------------
