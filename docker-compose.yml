@@ -1,0 +1,75 @@
+# Every service SupplyGuard AI needs, started with:  docker compose up -d
+# Host ports are shifted from the defaults (5433, 7475/7688, 8001, 8010) so this
+# project can run next to other projects (e.g. HelpDesk Lite) on the same laptop.
+services:
+  postgres:                       # operational tables, approvals, audit, checkpoints, pgvector
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: supplyguard
+      POSTGRES_PASSWORD: supplyguard
+      POSTGRES_DB: supplyguard
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplyguard -d supplyguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:                          # supplier / component / product / factory / customer graph
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/supplyguard-password
+    ports:
+      - "7475:7474"               # browser: http://localhost:7475
+      - "7688:7687"               # bolt (the code)
+    volumes:
+      - neo4j_data:/data
+      - ./data/graph:/var/lib/neo4j/import      # load.cypher reads the CSVs from here (Neo4j needs it writable)
+
+  chroma:                         # the second vector index (retrieval experiments + hybrid)
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/data
+
+  risk-info:                      # the trainer's independent external risk service (HTTP)
+    image: python:3.12-slim       # role 4 wraps it as an MCP server (mcp_servers/risk_info)
+    command: ["python", "/service/external_info_service.py", "8099"]
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./data/external_service:/service:ro
+
+  app:                            # the Chainlit chat
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Inside Docker the databases are reached by service name, not localhost.
+      DATABASE_URL: postgresql://supplyguard:supplyguard@postgres:5432/supplyguard
+      NEO4J_URI: bolt://neo4j:7687
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      RISK_SERVICE_URL: http://risk-info:8099
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      chroma:
+        condition: service_started
+    ports:
+      - "8010:8000"               # chat: http://localhost:8010
+    profiles: ["app"]             # started only with: docker compose --profile app up -d
+
+  # procurement-mcp:              # role 4: the simulated procurement system (MCP server)
+  #   build: ./mcp_servers/procurement
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  chroma_data:
