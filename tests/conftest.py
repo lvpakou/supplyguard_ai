@@ -47,3 +47,14 @@ def fake_llm(monkeypatch):
 
 def config(thread_id: str = "case-test") -> dict:
     return {"configurable": {"thread_id": thread_id}}
+
+
+@pytest.fixture(autouse=True)
+def no_real_search(monkeypatch):
+    """Graph tests run without Docker or Azure: the evidence step finds no documents.
+
+    The real search is tested directly in test_retrieval.py (it imports search_documents
+    from tools.retrieval, so this patch doesn't touch it).
+    """
+    monkeypatch.setattr(nodes, "search_documents", lambda *args, **kwargs: [])
+
