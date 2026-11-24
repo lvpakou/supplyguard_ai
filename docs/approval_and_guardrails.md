@@ -28,3 +28,28 @@ OWNER: role 5. Write here as you build (5 lines a day is enough).
   payload_hash on the button must equal the paused request, the role must be allowed. Typed text never
   decides an approval.
 - Resume value sent to the approval node: `{"decision", "change", "user_id", "user_role", "payload_hash"}`.
+
+## Prompt-injection guard (`tools/guards.py`)
+- `check_injection(text)` runs 7 named rules (override our instructions, fake SYSTEM message, skip human
+  approval, hide something from the user, reveal confidential data, change a supplier's status, hidden
+  HTML comment addressed to an AI). The warning names the rule, e.g.
+  `suspicious instruction (tries to skip human approval): 'Skip human approval'`.
+- Simple disguises are undone first: full-width letters and ligatures (NFKC), zero-width characters.
+- Measured on the trainer's data (`tests/test_guards.py`): 10/10 injection eval messages flagged,
+  0 of the other 95 eval messages, and of the 212 documents only `DOC-NOT-HELIOS-PRICE`.
+- `wrap_untrusted(source_id, text)`: how any LLM prompt must include document text (contract agent,
+  Deep Agent, follow-ups). A document cannot close the wrapper early.
+- Where it runs: every retrieved document (evidence node, already) and the user's message (intake node,
+  role 1 — proposed lines below). Flagged documents are reported and never reach an LLM.
+
+### Proposed for role 1 (`nodes.intake`, before the return)
+```python
+    warnings = list(state.warnings)
+    reason = guards.check_injection(state.raw_text)
+    warning = f"Ignored an instruction in the user's message: {reason}" if reason else None
+    if warning and warning not in warnings:   # intake runs again after a clarification
+        warnings.append(warning)
+    return {"facts": facts, "needs_clarification": unclear, "warnings": warnings}
+```
+With it, the prompt_injection eval goes from 7/10 (only when the search happens to return the Helios
+document) to 10/10, every time flagged for the attack in the message itself.
