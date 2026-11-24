@@ -170,9 +170,13 @@ def search_documents(query: str, user_role: str, filters: dict | None = None, k:
         "scopes": scopes_for_role(user_role),
         "k": max(1, min(k, 20)),
     }
-    with _connect() as conn:
-        rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
-    return [
+        with _connect() as conn:
+        try:
+            rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
+        except psycopg.errors.UndefinedTable:
+            raise RuntimeError(f"The document index '{PG_TABLE}' does not exist yet. "
+                               "Run once: uv run python scripts/index_documents.py") from None
+        return [
         Evidence(
             claim=f"{title}\n{content}",
             source_id=source_id,
