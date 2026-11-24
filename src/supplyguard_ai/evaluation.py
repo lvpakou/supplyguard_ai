@@ -11,6 +11,8 @@ How each category is run and scored (data/evaluation/eval_cases.jsonl):
   restart_recovery               "kill" the app at the named step, start a new app on the same
                                  checkpointer, approve: same approval payload, each action once
   follow_up                      golden case -> approve -> ask the question -> judge the answer
+                                 ("Resume the case I was reviewing yesterday": a new app on the
+                                 same checkpointer must list the case first, still paused)
   policy_and_authorization       golden case -> approve -> send the instruction -> judge the answer
                                  (change-quantity case: a new approval with a new payload hash)
 "Judge" = LLM-as-judge (as in the course, p15_eval) comparing the answer with the expected
@@ -25,7 +27,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from supplyguard_ai.config import data_dir
-from supplyguard_ai.graph import build_graph, make_checkpointer, pending
+from supplyguard_ai.graph import build_graph, is_resume_request, make_checkpointer, pending, recent_cases
 from supplyguard_ai.integrations import procurement
 from supplyguard_ai.tracing import run_config
 
@@ -105,6 +107,15 @@ def run_case(case: dict, runner: Runner) -> dict:
             "second_pause": again.get("type"),
             "second_hash": again.get("request", {}).get("payload_hash"),
         }
+
+    if is_resume_request(message):  # "Resume the case I was reviewing yesterday"
+        thread, config, _ = runner.to_approval(cid)
+        restarted = build_graph(runner.checkpointer)           # the next day: a new app
+        cases = recent_cases(restarted, user_id="u-pm-01")
+        newest = cases[0] if cases else {}
+        return {"resumed": newest.get("case_id") == thread,
+                "status": newest.get("status"),
+                "still_waiting": bool(restarted.get_state(config).interrupts)}
 
     # follow_up and policy_and_authorization: ask after the decision on the golden case
     _, config, result = runner.to_approval(cid)
@@ -193,6 +204,11 @@ def score(case: dict, outputs: dict, use_judge: bool = True) -> dict:
         return {"key": key, "score": int(ok),
                 "comment": f"same payload={outputs['same_payload']}, executed "
                            f"{outputs['executed']}/{outputs['expected_actions']}"}
+
+    if "resumed" in outputs:  # resume yesterday's case
+        ok = outputs["resumed"] and outputs["still_waiting"]
+        return {"key": key, "score": int(ok),
+                "comment": f"found the case={outputs['resumed']}, status: {outputs['status']}"}
 
     if "second_pause" in outputs:  # approve, then change quantity
         ok = outputs["second_pause"] == "approval" and outputs["second_hash"] != outputs["first_hash"]
