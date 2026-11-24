@@ -11,7 +11,10 @@ server (role, current payload_hash, case from the session, never from the button
 two roles needs both sign-offs; the second approver finds the case in their greeting, also
 after a restart. Typed text never decides an approval.
 
-Still to come (role 5): evidence display, options table, follow-ups.
+Follow-ups: a question typed while the approval waits, or after the decision, is answered from
+the saved case (followup.py); the answer is shown and the case keeps waiting where it was.
+
+Still to come (role 5): evidence display, options table.
 """
 
 import hmac
@@ -24,7 +27,8 @@ from langgraph.types import Command
 from supplyguard_ai import approval as approvals
 from supplyguard_ai.auth import document_scopes, users
 from supplyguard_ai.config import database_url
-from supplyguard_ai.graph import build_graph, make_async_checkpointer
+from supplyguard_ai.graph import arecent_cases, build_graph, is_resume_request, make_async_checkpointer
+from supplyguard_ai.nodes import APPROVE_WORDS, REJECT_WORDS
 from supplyguard_ai.state import ApprovalRequest
 from supplyguard_ai.tracing import run_config
 
@@ -112,21 +116,60 @@ def route_message(thread_id: str | None, text: str) -> tuple[str | None, object 
     return thread_id, Command(resume=text), None
 
 
+def is_decision(text: str) -> bool:
+    """Would the approval node read this text as approve / reject / change? (same rule as nodes.approval)"""
+    word = text.strip().lower().strip(".!")
+    return word in APPROVE_WORDS or word in REJECT_WORDS or word.startswith("change")
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    if is_resume_request(message.content):  # "Resume the case I was reviewing yesterday"
+        await show_saved_cases()
+        return
     thread_id, graph_input, reply = route_message(cl.user_session.get("thread_id"), message.content)
     cl.user_session.set("thread_id", thread_id)
     if reply:
         await cl.Message(reply).send()
     if isinstance(graph_input, dict):  # a new case
         graph_input = with_user(graph_input, cl.user_session.get("user"))
-    elif graph_input is not None and await pending_approval(thread_id):
-        # Typed text never decides an approval: only the checked buttons can.
+    elif graph_input is not None and is_decision(message.content) and await pending_approval(thread_id):
+        # Typed text never decides an approval: only the checked buttons can. Questions go through.
         await cl.Message("This case is waiting for an approval decision: please use the buttons.").send()
         await show_case(thread_id)
         return
     if graph_input is not None:
         await run(graph_input, thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Resuming a saved case (role 1: graph.recent_cases). Cases are in the Postgres
+# checkpointer, so this also works the next day and after a restart.
+# ---------------------------------------------------------------------------
+async def show_saved_cases() -> None:
+    user_id, _ = _user()
+    cases = await arecent_cases(await get_graph(), user_id=user_id)
+    if not cases:
+        await cl.Message("You have no saved cases yet. Describe a supply disruption to start one.").send()
+        return
+    lines = ["**Your recent cases** (newest first):"]
+    lines += [f"- {c['updated']} · {c['request']} · _{c['status']}_" for c in cases]
+    buttons = [cl.Action(name="resume_case", label=f"Open {c['case_id'][:8]}", payload={"case_id": c["case_id"]})
+               for c in cases]
+    await cl.Message("\n".join(lines), actions=buttons).send()
+
+
+@cl.action_callback("resume_case")
+async def on_resume_case(action: cl.Action) -> None:
+    user_id, _ = _user()
+    case_id = action.payload["case_id"]
+    if case_id not in [c["case_id"] for c in await arecent_cases(await get_graph(), user_id=user_id)]:
+        await cl.Message("That case is not one of yours.").send()   # never trust the button
+        return
+    cl.user_session.set("thread_id", case_id)
+    snapshot = await (await get_graph()).aget_state(_config(case_id))
+    await cl.Message(f"Resumed case {case_id[:8]}: {snapshot.values.get('raw_text', '')}").send()
+    await show_case(case_id)
 
 
 # ---------------------------------------------------------------------------
@@ -206,14 +249,23 @@ async def on_decide(action: cl.Action) -> None:
 # ---------------------------------------------------------------------------
 async def run(graph_input, thread_id: str) -> None:
     graph = await get_graph()
+    asked = len((await graph.aget_state(_config(thread_id))).values.get("followups", []))
+    waiting = await pending_approval(thread_id)
     async for event in graph.astream(graph_input, _config(thread_id), stream_mode="tasks"):
         if "input" in event and event["name"] not in {"clarify", "approval", "followup"}:
             await cl.Message(f"_{event['name']}..._").send()
     request = await pending_approval(thread_id)
-    if request:  # a new approval round: audit it, and let the approvers find it after a restart
+    if request and request != waiting:  # a new approval round: audit it, and let approvers find it
         user_id, role = _user()
         await cl.make_async(approvals.record)(thread_id, request, user_id, role, "requested")
-    await show_case(thread_id)
+
+    snapshot = await graph.aget_state(_config(thread_id))
+    followups = snapshot.values.get("followups", [])
+    if len(followups) > asked:  # a question was answered: show the answer, the case stays where it was
+        note = "\n\n_The approval request above is still waiting for a decision._" if request else ""
+        await cl.Message(followups[-1].answer + note).send()
+        return
+    await show(snapshot.values, snapshot.interrupts)
 
 
 async def show_case(thread_id: str) -> None:
@@ -229,11 +281,9 @@ async def show(values: dict, interrupts) -> None:
         await cl.Message(payload["question"]).send()
     elif payload["type"] == "approval":
         await show_approval(values, ApprovalRequest(**payload["request"]))
-    elif payload["type"] == "followup":
-        if values.get("followups"):
-            await cl.Message(values["followups"][-1].answer).send()
-        elif values.get("report"):
-            await cl.Message(values["report"] + "\n\n_Ask a follow-up question, or type **new**._").send()
+    elif payload["type"] == "followup" and values.get("report"):
+        # Answers are shown by run() as they come; here the case is closed: show its report.
+        await cl.Message(values["report"] + "\n\n_Ask a follow-up question, or type **new**._").send()
 
 
 async def show_approval(values: dict, request: ApprovalRequest) -> None:

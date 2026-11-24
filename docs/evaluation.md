@@ -32,3 +32,14 @@ uv run python scripts/run_evaluation.py                      # LangSmith dataset
 | follow_up | 0.00 | follow-up answers are a stub → role 5 |
 | restart_recovery | 1.00 | same payload, each action once |
 | policy_and_authorization | 0.00 | instructions after the decision not handled; change → same plan/hash → roles 5 and 2 |
+
+### 2026-11-24 · round 2 (real impact from role 2, real search from role 3) · OVERALL 0.77
+| Category | Score | Change |
+|---|---|---|
+| golden | 1.00 | |
+| extraction_and_impact | **1.00** | 0.62 → 1.00: affected products and open orders now calculated from the data |
+| ambiguity | 1.00 | |
+| prompt_injection | 0.00 | still open → role 5 (check the user's message, not only documents) |
+| follow_up | 0.00 | still a stub → role 5 |
+| restart_recovery | 1.00 | |
+| policy_and_authorization | 0.00 | needs real follow-up answers (role 5) and build_options using requested_change (role 2) |

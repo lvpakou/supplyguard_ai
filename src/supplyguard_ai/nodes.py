@@ -28,7 +28,9 @@ from supplyguard_ai.report import build_report
 from supplyguard_ai.state import CaseState, Clarification, FollowUp, IncidentFacts
 from supplyguard_ai.tools import critic, guards
 from supplyguard_ai.tools.graph_queries import alternatives
-from supplyguard_ai.tools.impact import assess_impact
+from supplyguard_ai.tools.impact import assess_impact, delayed_delivery
+from supplyguard_ai.tools.inventory import usable_stock
+from supplyguard_ai.tools.tables import table
 from supplyguard_ai.tools.options import build_options
 from supplyguard_ai.tools.retrieval import find_conflicts, search_documents
 
@@ -130,25 +132,59 @@ def clarify(state: CaseState) -> dict:
 
 
 def impact(state: CaseState) -> dict:
+    """Role 2's calculations, plus the data problems they found (stale counts, tables that
+    disagree, no open PO for the delay), so the chat and the report can show them."""
+    facts = state.facts
     try:
-        return {"impact": assess_impact(state.facts)}
+        summary = assess_impact(facts)
     except NotImplementedError as error:  # a stub that only knows MC-17
         return {"warnings": state.warnings + [f"Impact not calculated: {error}"]}
+    found = list(usable_stock(facts.component_id)["warnings"])
+    delivery = delayed_delivery(facts.supplier_id, facts.component_id, facts.delay_days or 0)
+    if delivery["warning"]:
+        found.append(delivery["warning"])
+    new = [w for w in found if w not in state.warnings]   # no duplicates after a change round
+    return {"impact": summary, "warnings": state.warnings + new}
+
+
+PER_SUPPLIER_K = 6   # documents per supplier: contract, qualification, notices, e-mails
+
+
+def suppliers_of(component_id: str) -> list[str]:
+    """Every supplier that sells the component (structured/supplier_components): the delayed
+    one and its alternatives. Read from role 2's tables, so it works before the graph exists."""
+    rows = table("supplier_components")
+    return sorted(rows[rows["component_id"] == component_id]["supplier_id"].dropna().unique())
 
 
 def evidence(state: CaseState) -> dict:
-    """Documents (role 3) + injection guard (role 5) + contract agent (role 3)."""
+    """Documents (role 3) + injection guard (role 5) + contract agent (role 3).
+
+    One general search, plus one search PER SUPPLIER of the component (filter supplier_id),
+    so the contract, notices and e-mails of Atlas AND of every alternative come back. That is
+    what conflict detection needs (e.g. Helios contract 4,000 vs Helios e-mail 1,500).
+    """
     facts = state.facts
-    query = f"{facts.supplier_name or ''} {facts.component_id or ''} delay contract capacity certification"
-    found, warnings = [], list(state.warnings)
-    for item in search_documents(query, state.user_role):
+    topic = f"{facts.component_id or ''} delay lead time capacity expedite fee certification price"
+    results = search_documents(f"{facts.supplier_name or ''} {topic}", state.user_role)
+    suppliers = suppliers_of(facts.component_id) if facts.component_id else []
+    for supplier_id in suppliers:
+        results += search_documents(topic, state.user_role, filters={"supplier_id": supplier_id},
+                                    k=PER_SUPPLIER_K)
+
+    found, warnings, seen = [], list(state.warnings), set()
+    for item in results:
+        if item.source_id in seen:
+            continue                      # the same document from two searches
+        seen.add(item.source_id)
         reason = guards.check_injection(item.claim)
         if reason:  # reported and ignored, never followed
-            warnings.append(f"Ignored {item.source_id}: {reason}")
+            warning = f"Ignored {item.source_id}: {reason}"
+            if warning not in warnings:
+                warnings.append(warning)
         else:
             found.append(item)
-    supplier_ids = [s for s in [facts.supplier_id] if s]
-    found += analyze_contracts(facts, supplier_ids, state.user_role)
+    found += analyze_contracts(facts, suppliers or [s for s in [facts.supplier_id] if s], state.user_role)
     return {"evidence": found, "conflicts": find_conflicts(found), "warnings": warnings}
 
 

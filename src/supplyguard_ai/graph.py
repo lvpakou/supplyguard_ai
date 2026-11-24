@@ -16,6 +16,8 @@ State is saved after every step (checkpointer): in Postgres when DATABASE_URL is
 so a case paused at the approval survives a restart and resumes without duplicate actions.
 """
 
+import re
+
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -116,3 +118,68 @@ def pending(result: dict) -> dict | None:
     """What the graph is paused for (the dict given to interrupt()), or None."""
     interrupts = result.get("__interrupt__")
     return interrupts[0].value if interrupts else None
+
+
+# ---------------------------------------------------------------------------
+# Resuming a saved case ("Resume the case I was reviewing yesterday")
+# ---------------------------------------------------------------------------
+_RESUME = re.compile(r"^\s*(resume|continue)\b|case i was (reviewing|working on)|yesterday'?s case",
+                     re.IGNORECASE)
+
+
+def is_resume_request(text: str) -> bool:
+    """'resume', 'Continue my case', 'Resume the case I was reviewing yesterday' -> True."""
+    text = text.strip()
+    return bool(_RESUME.search(text)) and (len(text) < 100 or "case" in text.lower())
+
+
+def case_status(interrupts) -> str:
+    """Where a saved case stopped, in words for the user."""
+    kind = interrupts[0].value.get("type") if interrupts else None
+    return {"clarification": "waiting for your answer", "approval": "waiting for approval",
+            "followup": "decided (you can ask follow-up questions)"}.get(kind, "in progress")
+
+
+def _summary(snapshot) -> dict | None:
+    values = snapshot.values
+    if not values or "case_id" not in values:
+        return None
+    # A field nobody wrote is not saved: fall back to CaseState's default (e.g. user_id).
+    user_id = values.get("user_id", CaseState.model_fields["user_id"].default)
+    return {"case_id": values["case_id"], "user_id": user_id,
+            "request": values.get("raw_text", "")[:90], "status": case_status(snapshot.interrupts),
+            "updated": (snapshot.created_at or "")[:16].replace("T", " ")}
+
+
+def _newest_threads(checkpoints) -> list[str]:
+    """Thread ids, most recently saved first (each checkpoint has a timestamp "ts")."""
+    newest: dict[str, str] = {}
+    for item in checkpoints:
+        thread = item.config["configurable"]["thread_id"]
+        newest[thread] = max(newest.get(thread, ""), item.checkpoint["ts"])
+    return sorted(newest, key=newest.get, reverse=True)
+
+
+def recent_cases(app, user_id: str | None = None, limit: int = 5) -> list[dict]:
+    """The saved cases (newest first) of this user, read from the checkpointer: they survive
+    a restart when the checkpointer is Postgres."""
+    found = []
+    for thread in _newest_threads(app.checkpointer.list(None)):
+        summary = _summary(app.get_state({"configurable": {"thread_id": thread}}))
+        if summary and (user_id is None or summary["user_id"] == user_id):
+            found.append(summary)
+        if len(found) == limit:
+            break
+    return found
+
+
+async def arecent_cases(app, user_id: str | None = None, limit: int = 5) -> list[dict]:
+    """The same for the async chat."""
+    found = []
+    for thread in _newest_threads([c async for c in app.checkpointer.alist(None)]):
+        summary = _summary(await app.aget_state({"configurable": {"thread_id": thread}}))
+        if summary and (user_id is None or summary["user_id"] == user_id):
+            found.append(summary)
+        if len(found) == limit:
+            break
+    return found
