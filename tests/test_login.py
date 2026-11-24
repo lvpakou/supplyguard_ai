@@ -38,7 +38,8 @@ def test_a_new_case_runs_as_the_signed_in_user(fake_llm):
     fake_llm(MC17_FACTS)
     viewer = login("u-ro-01", "test-pass")
 
-    result = build_graph().invoke(chat_app.case_input("case-viewer", MC17_MESSAGE, viewer),
-                                  config("case-viewer"))
+    _, case_start, _ = chat_app.route_message(None, MC17_MESSAGE)
+
+    result = build_graph().invoke(chat_app.with_user(case_start, viewer), config(case_start["case_id"]))
 
     assert (result["user_id"], result["user_role"]) == ("u-ro-01", "viewer")

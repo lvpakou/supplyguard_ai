@@ -55,10 +55,9 @@ async def login(username: str, password: str) -> cl.User | None:
                    metadata={"name": user["name"], "role": user["role"]})
 
 
-def case_input(thread_id: str, text: str, user: cl.User) -> dict:
-    """The start of a new case: who opened it decides which documents it may use."""
-    return {"case_id": thread_id, "raw_text": text,
-            "user_id": user.identifier, "user_role": user.metadata["role"]}
+def with_user(case_start: dict, user: cl.User) -> dict:
+    """A new case runs as the signed-in user: their role decides which documents it may use."""
+    return {**case_start, "user_id": user.identifier, "user_role": user.metadata["role"]}
 
 
 @cl.on_chat_start
@@ -69,19 +68,31 @@ async def greet() -> None:
                      f"Documents you can see: {scopes}.\n\nDescribe the supply disruption.").send()
 
 
+def route_message(thread_id: str | None, text: str) -> tuple[str | None, object | None, str | None]:
+    """Decide what one chat message means: (thread_id to keep, graph input, reply).
+
+    - "new"            -> forget the open case; the NEXT message starts a new one
+    - no open case     -> this message starts a new case
+    - an open case     -> this message answers the paused step (resume)
+    """
+    if text.strip().lower() == "new":
+        return None, None, "OK, describe the next disruption."
+    if thread_id is None:
+        thread_id = str(uuid.uuid4())
+        return thread_id, {"case_id": thread_id, "raw_text": text}, None
+    return thread_id, Command(resume=text), None
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    thread_id = cl.user_session.get("thread_id")
-    if thread_id is None or message.content.strip().lower() == "new":
-        thread_id = str(uuid.uuid4())
-        cl.user_session.set("thread_id", thread_id)
-        if message.content.strip().lower() == "new":
-            await cl.Message("OK, describe the next disruption.").send()
-            return
-        graph_input = case_input(thread_id, message.content, cl.user_session.get("user"))
-    else:
-        graph_input = Command(resume=message.content)
-    await run(graph_input, thread_id)
+    thread_id, graph_input, reply = route_message(cl.user_session.get("thread_id"), message.content)
+    cl.user_session.set("thread_id", thread_id)
+    if reply:
+        await cl.Message(reply).send()
+    if isinstance(graph_input, dict):  # a new case
+        graph_input = with_user(graph_input, cl.user_session.get("user"))
+    if graph_input is not None:
+        await run(graph_input, thread_id)
 
 
 @cl.action_callback("decide")
