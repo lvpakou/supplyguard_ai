@@ -44,6 +44,33 @@ services:
     volumes:
       - ./data/external_service:/service:ro
 
+  procurement-mcp:                # role 4: the simulated procurement system (MCP, Streamable HTTP)
+    build: ./mcp_servers/procurement
+    environment:
+      DATABASE_URL: postgresql://supplyguard:supplyguard@postgres:5432/supplyguard
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      MCP_TRANSPORT: streamable-http
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8002:8000"               # http://localhost:8002/mcp
+
+  risk-mcp:                       # role 4: the external risk service, as an MCP server
+    build: ./mcp_servers/risk_info
+    environment:
+      RISK_SERVICE_URL: http://risk-info:8099
+      PROCUREMENT_MCP_URL: http://procurement-mcp:8000/mcp
+      RISK_MCP_URL: http://risk-mcp:8000/mcp
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      MCP_TRANSPORT: streamable-http
+    depends_on:
+      - risk-info
+    ports:
+      - "8003:8000"               # http://localhost:8003/mcp
+
   app:                            # the Chainlit chat
     build: .
     env_file:
@@ -62,12 +89,12 @@ services:
         condition: service_started
       chroma:
         condition: service_started
+      procurement-mcp:
+        condition: service_started
     ports:
       - "8010:8000"               # chat: http://localhost:8010
     profiles: ["app"]             # started only with: docker compose --profile app up -d
 
-  # procurement-mcp:              # role 4: the simulated procurement system (MCP server)
-  #   build: ./mcp_servers/procurement
 
 volumes:
   postgres_data:

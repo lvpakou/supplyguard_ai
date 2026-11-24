@@ -3,8 +3,10 @@
     uv run python scripts/reset_demo.py          # shows what would be deleted
     uv run python scripts/reset_demo.py --yes    # deletes it
 
-Empties ONLY the saved cases (LangGraph checkpoint tables) and the approval audit
-(approval_decisions). The loaded data (CSV tables, documents, graph) stays as it is.
+Empties the saved cases (LangGraph checkpoint tables), the approval audit
+(approval_decisions) and the procurement MCP server's records (approvals, idempotency,
+audit). Approved actions also CHANGED the operational tables (stock transfers, new POs),
+so run scripts/load_postgres.py afterwards to restore the trainer's data.
 Use it on your own laptop's database, never on anything shared.
 """
 
@@ -17,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from supplyguard_ai.config import database_url  # noqa: E402
 
-TABLES = ["checkpoints", "checkpoint_writes", "checkpoint_blobs", "approval_decisions"]
+TABLES = ["checkpoints", "checkpoint_writes", "checkpoint_blobs", "approval_decisions",
+          "procurement_approvals", "procurement_idempotency", "procurement_action_audit"]
 
 
 def main() -> None:
@@ -36,7 +39,8 @@ def main() -> None:
             return
         if tables:
             conn.execute("TRUNCATE " + ", ".join(f'"{t}"' for t in tables))
-        print("Done: saved cases and approval records are empty. The loaded data is untouched.")
+        print("Done: saved cases, approvals and procurement records are empty.")
+        print("Now restore the operational data: uv run python scripts/load_postgres.py")
 
 
 if __name__ == "__main__":

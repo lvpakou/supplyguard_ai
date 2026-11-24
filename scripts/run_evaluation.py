@@ -13,9 +13,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-if "--local" in sys.argv:  # before supplyguard_ai loads .env: keep local runs out of LangSmith
-    import os
+import os
 
+# The evaluation never writes to the real procurement system (in-memory fake instead).
+# Set before supplyguard_ai loads .env (load_dotenv does not overwrite a set variable).
+os.environ["PROCUREMENT_MCP_URL"] = ""
+if "--local" in sys.argv:  # keep local runs out of LangSmith
     os.environ["LANGSMITH_TRACING"] = "false"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))

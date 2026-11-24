@@ -4,11 +4,11 @@ OWNER: role 1. About 10 minutes. Rehearse twice; know who says what.
 
 ## Before the demo (10 minutes earlier)
 ```bash
-docker compose up -d
-uv run python scripts/load_postgres.py
+docker compose up -d                         # databases + the two MCP servers
+uv run python scripts/reset_demo.py --yes    # forget old cases, approvals, procurement records
+uv run python scripts/load_postgres.py       # restore the operational data (approved actions change it)
 uv run python scripts/index_documents.py
-uv run python scripts/load_graph.py          # role 4, once it exists
-uv run python scripts/reset_demo.py --yes    # forget old test cases and approvals
+uv run python scripts/load_graph.py
 uv run chainlit run src/supplyguard_ai/chat_app.py
 ```
 Open two browser windows: one normal (Maria), one private (Paul). Open LangSmith → project
