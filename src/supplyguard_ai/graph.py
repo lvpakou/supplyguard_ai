@@ -3,9 +3,9 @@ r"""THE INCIDENT WORKFLOW (LangGraph). OWNER: role 1.
     START -> intake --(unclear)--> clarify --> intake
                |
                v
-             impact -> evidence -> dependencies -> options -> challenge -> approval (pause)
-                                                     ^                       |
-                                                     +------ changed --------+
+             impact -> evidence -> dependencies -> options -> challenge -> approval (pause) <-+
+                                                     ^                       |   | question |
+                                                     +------ changed --------+   +----------+
                                                                              | approved
                                                      report <-- rejected ----+--> execute -> report
                                                        |
@@ -42,7 +42,10 @@ def route_after_intake(state: CaseState) -> str:
 
 
 def route_after_approval(state: CaseState) -> str:
-    return {"approved": "execute", "changed": "options"}.get(state.approval.status, "report")
+    """approved -> execute · changed -> options (new plan) · rejected -> report ·
+    still pending (the user asked a question) -> wait for the decision again."""
+    return {"approved": "execute", "changed": "options", "pending": "approval"}.get(
+        state.approval.status, "report")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +82,9 @@ async def make_async_checkpointer(database_url: str | None):
 # ---------------------------------------------------------------------------
 # The graph
 # ---------------------------------------------------------------------------
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, interrupt_before=None, interrupt_after=None):
+    """The compiled workflow. interrupt_before/after are only used by the evaluation, to
+    "kill" the app at a given step and test that it resumes (restart_recovery cases)."""
     builder = StateGraph(CaseState)
     for name in ["intake", "clarify", "impact", "evidence", "dependencies", "options",
                  "challenge", "approval", "execute", "report", "followup"]:
@@ -95,11 +100,16 @@ def build_graph(checkpointer=None):
     builder.add_edge("options", "challenge")
     builder.add_edge("challenge", "approval")
     builder.add_conditional_edges("approval", route_after_approval,
-                                  {"execute": "execute", "options": "options", "report": "report"})
+                                  {"execute": "execute", "options": "options", "report": "report",
+                                   "approval": "approval"})
     builder.add_edge("execute", "report")
     builder.add_edge("report", "followup")
     builder.add_edge("followup", "followup")
-    return builder.compile(checkpointer=checkpointer or make_checkpointer())
+    return builder.compile(
+        checkpointer=checkpointer or make_checkpointer(),
+        interrupt_before=interrupt_before,
+        interrupt_after=interrupt_after,
+    )
 
 
 def pending(result: dict) -> dict | None:

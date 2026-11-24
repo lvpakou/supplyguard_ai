@@ -141,16 +141,45 @@ def challenge(state: CaseState) -> dict:
     return {"critique": critic.review(state)}
 
 
+APPROVE_WORDS = {"approve", "approved", "yes", "ok"}
+REJECT_WORDS = {"reject", "rejected", "no"}
+
+
 def approval(state: CaseState) -> dict:
-    """Pause for the human decision on the EXACT payload (no purchase before this)."""
+    """Pause for the human decision on the EXACT payload (no purchase before this).
+
+    What the chat may send back (role 5):
+      "approve" / "reject"                          -> the decision
+      {"decision": "change", "qty": 6000, ...}      -> keep the change in requested_change and
+      "change ..." (free text)                         go back to options: new plan, new hash,
+                                                       new approval (approval binds to the payload)
+      anything else, e.g. "Why not Helios?"         -> a question: answered, and we keep waiting
+                                                       (a question must never count as a reject)
+    """
     request = approval_rules.build_request(state.case_id, state.recommendation)
     decision = interrupt({"type": "approval", "request": request.model_dump(),
                           "summary": state.recommendation.summary})
-    # The chat sends "approve" / "reject", or {"decision": "change", ...} (role 5).
-    word = (decision.get("decision") if isinstance(decision, dict) else str(decision)).strip().lower()
-    status = {"approve": "approved", "approved": "approved", "reject": "rejected",
-              "rejected": "rejected", "change": "changed"}.get(word, "rejected")
-    return {"approval": request.model_copy(update={"status": status, "decided_by": state.user_id})}
+
+    if isinstance(decision, dict):
+        text = str(decision.get("decision", "")).strip()
+        details = {k: v for k, v in decision.items() if k != "decision"}
+    else:
+        text, details = str(decision).strip(), {}
+    word = text.lower().strip(".!")
+
+    def decided(status: str, change: dict | None = None) -> dict:
+        return {"approval": request.model_copy(update={"status": status, "decided_by": state.user_id}),
+                "requested_change": change}
+
+    if word in APPROVE_WORDS:
+        return decided("approved")
+    if word in REJECT_WORDS:
+        return decided("rejected")
+    if word.startswith("change"):
+        return decided("changed", details or {"note": text})
+    # A question about the proposal: answer it and wait for the decision again.
+    answer = followup_answers.answer(state, text)
+    return {"approval": request, "followups": state.followups + [FollowUp(question=text, answer=answer)]}
 
 
 def execute(state: CaseState) -> dict:
