@@ -36,13 +36,23 @@ services:
     volumes:
       - chroma_data:/data
 
-  risk-info:                      # the trainer's independent external risk service (HTTP)
-    image: python:3.12-slim       # role 4 wraps it as an MCP server (mcp_servers/risk_info)
-    command: ["python", "/service/external_info_service.py", "8099"]
+  risk-info:                      # the external risk service (HTTP); role 4 also wraps it as MCP (risk-mcp)
+    build:
+      context: ./data/external_info_service
     ports:
       - "8099:8099"
     volumes:
-      - ./data/external_service:/service:ro
+      - ./data/external_service:/feed:ro   # the trainer's folder (feed read from /feed/risk_feed.json), not a copy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   procurement-mcp:                # role 4: the simulated procurement system (MCP, Streamable HTTP)
     build: ./mcp_servers/procurement
@@ -67,7 +77,8 @@ services:
       MCP_PORT: "8000"
       MCP_TRANSPORT: streamable-http
     depends_on:
-      - risk-info
+      risk-info:
+        condition: service_healthy   # wait until the feed is loaded
     ports:
       - "8003:8000"               # http://localhost:8003/mcp
 
@@ -91,6 +102,8 @@ services:
         condition: service_started
       procurement-mcp:
         condition: service_started
+      risk-info:
+        condition: service_healthy   # the chat also calls it directly (RISK_SERVICE_URL)
     ports:
       - "8010:8000"               # chat: http://localhost:8010
     profiles: ["app"]             # started only with: docker compose --profile app up -d
