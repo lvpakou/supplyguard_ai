@@ -1,16 +1,22 @@
-"""CHAINLIT CHAT. OWNER: role 5 (this is a minimal first version from role 1).
+"""CHAINLIT CHAT. OWNER: role 5.
 
     uv run chainlit run src/supplyguard_ai/chat_app.py
 
-Role 5 adds: login with users.csv roles, evidence display, options table,
-Approve / Reject / Change, follow-up buttons (see HelpDesk Lite's chat_app.py).
+Login: user_id from data/config/users.csv (e.g. u-pm-01) + DEMO_PASSWORD from .env.
+Every new case carries the user's id and role, so retrieval only shows the documents
+that role may see. Needs CHAINLIT_AUTH_SECRET in .env (create it with `chainlit create-secret`).
+
+Still to come (role 5): evidence display, options table, Approve / Reject / Change, follow-ups.
 """
 
+import hmac
+import os
 import uuid
 
 import chainlit as cl
 from langgraph.types import Command
 
+from supplyguard_ai.auth import document_scopes, users
 from supplyguard_ai.config import database_url
 from supplyguard_ai.graph import build_graph, make_async_checkpointer
 
@@ -34,6 +40,35 @@ def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
+@cl.password_auth_callback
+async def login(username: str, password: str) -> cl.User | None:
+    """Known user_id + the demo password -> signed in with the role from users.csv.
+
+    users.csv is trainer data without passwords, so the demo shares one password (DEMO_PASSWORD).
+    If it is not set, nobody can sign in.
+    """
+    user = users().get(username.strip().lower())
+    expected = os.getenv("DEMO_PASSWORD", "")
+    if not user or not expected or not hmac.compare_digest(password.encode(), expected.encode()):
+        return None
+    return cl.User(identifier=user["user_id"], display_name=user["name"],
+                   metadata={"name": user["name"], "role": user["role"]})
+
+
+def case_input(thread_id: str, text: str, user: cl.User) -> dict:
+    """The start of a new case: who opened it decides which documents it may use."""
+    return {"case_id": thread_id, "raw_text": text,
+            "user_id": user.identifier, "user_role": user.metadata["role"]}
+
+
+@cl.on_chat_start
+async def greet() -> None:
+    user = cl.user_session.get("user")
+    scopes = ", ".join(document_scopes(user.identifier))
+    await cl.Message(f"Signed in as **{user.metadata['name']}** ({user.metadata['role']}). "
+                     f"Documents you can see: {scopes}.\n\nDescribe the supply disruption.").send()
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     thread_id = cl.user_session.get("thread_id")
@@ -43,7 +78,7 @@ async def on_message(message: cl.Message) -> None:
         if message.content.strip().lower() == "new":
             await cl.Message("OK, describe the next disruption.").send()
             return
-        graph_input = {"case_id": thread_id, "raw_text": message.content}
+        graph_input = case_input(thread_id, message.content, cl.user_session.get("user"))
     else:
         graph_input = Command(resume=message.content)
     await run(graph_input, thread_id)
