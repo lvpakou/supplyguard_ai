@@ -11,3 +11,20 @@ OWNER: role 5. Write here as you build (5 lines a day is enough).
   graph and role 3's retrieval filter documents by that role (viewer: public only; only the
   finance controller sees finance-confidential).
 - Limitation: one shared demo password, no per-user secrets. A real deployment would use SSO (OAuth).
+
+## Approval (`approval.py`, `chat_app.py`)
+- The request lists every exact action (supplier, quantity, unit price, date, cost), the total vs
+  the cap, uncovered units, evidence ids, the challenge findings and warnings, and the payload hash.
+- Tiers from `policies.json`: up to EUR 25k procurement_manager; up to 75k procurement_manager **and**
+  finance_controller (two sign-offs, e.g. the EUR 30,378 MC-17 plan); up to 90k finance_director
+  (nobody in users.csv: must be escalated); above that nobody can approve.
+- Approve: only a role of the request's tier. Reject / Change: any approver role (they spend nothing).
+- Every decision is a row in Postgres `approval_decisions` (requested / approve / reject / change, who,
+  when, payload_hash, the requested change). A sign-off counts only for the payload_hash it was given
+  for; a reject or change starts the sign-offs over.
+- The graph is resumed with "approve" only when all roles have signed. The second approver sees the
+  waiting request in their greeting, also after an application restart (checkpoint + audit table).
+- Checked on the server for every click: the case comes from the session (never from the button), the
+  payload_hash on the button must equal the paused request, the role must be allowed. Typed text never
+  decides an approval.
+- Resume value sent to the approval node: `{"decision", "change", "user_id", "user_role", "payload_hash"}`.
