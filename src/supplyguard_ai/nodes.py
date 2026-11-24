@@ -10,6 +10,7 @@ from the top, so nothing before interrupt() may have side effects.
 """
 
 import csv
+import re
 from functools import lru_cache
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -63,8 +64,35 @@ def resolve_supplier(facts: IncidentFacts) -> IncidentFacts:
         return facts.model_copy(update={"supplier_id": matches[0]["supplier_id"]})
     if len(matches) > 1:
         names = " or ".join(f"{s['name']} ({s['supplier_id']})" for s in matches)
-        return facts.model_copy(update={"ambiguities": facts.ambiguities + [f"'{facts.supplier_name}' could be {names}"]})
+        # Our question replaces any the LLM wrote about the same name (no duplicate questions).
+        others = [a for a in facts.ambiguities if facts.supplier_name.lower() not in a.lower()]
+        return facts.model_copy(update={"ambiguities": others + [f"'{facts.supplier_name}' could be {names}"]})
     return facts
+
+
+@lru_cache
+def _component_ids() -> set[str]:
+    with (data_dir() / "structured" / "components.csv").open(newline="", encoding="utf-8") as f:
+        return {row["component_id"] for row in csv.DictReader(f)}
+
+
+_COMPONENT = re.compile(r"MC\s*-?\s*0*(\d+)", re.IGNORECASE)
+
+
+def resolve_component(facts: IncidentFacts) -> IncidentFacts:
+    """Write the component the way the data does: "mc17", "Mc-17", "MC 17" -> "MC-17".
+
+    An ID that is not in components.csv is not used (the next steps would find nothing):
+    the field is emptied and the user is asked.
+    """
+    if not facts.component_id:
+        return facts
+    match = _COMPONENT.fullmatch(facts.component_id.strip())
+    canonical = f"MC-{int(match.group(1))}" if match else facts.component_id.strip()
+    if canonical in _component_ids():
+        return facts.model_copy(update={"component_id": canonical})
+    question = f"Component '{facts.component_id}' is not in our component list. Which component is delayed?"
+    return facts.model_copy(update={"component_id": None, "ambiguities": facts.ambiguities + [question]})
 
 
 def _text_for_intake(state: CaseState) -> str:
@@ -83,11 +111,11 @@ def intake(state: CaseState) -> dict:
     """Extract the facts (LLM, structured output) and decide what is still unclear."""
     extractor = get_llm().with_structured_output(IncidentFacts)
     facts = extractor.invoke([SystemMessage(INTAKE_PROMPT), HumanMessage(_text_for_intake(state))])
-    facts = resolve_supplier(facts)
+    facts = resolve_component(resolve_supplier(facts))
     unclear = list(facts.ambiguities)
     if not facts.supplier_id and not unclear:
         unclear.append("Which supplier is affected (name or ID)?")
-    if not facts.component_id:
+    if not facts.component_id and not any("component" in q.lower() for q in unclear):
         unclear.append("Which component is delayed (e.g. MC-17)?")
     if facts.delay_days is None:
         unclear.append("How many days is the delay?")
