@@ -10,8 +10,6 @@ The first part of this file is shared by scripts/index_documents.py and the sear
 indexing and searching always use the same names, the same parsing and the same
 embedding model.
 
-STUB (still): search_documents returns no documents and find_conflicts the four golden
-conflicts. Keep the signatures.
 """
 
 import csv
@@ -25,7 +23,7 @@ import psycopg
 from langchain_openai import AzureOpenAIEmbeddings
 
 from supplyguard_ai.auth import scopes_for_role
-from supplyguard_ai.config import data_dir, database_url, require
+from supplyguard_ai.config import data_dir, database_url, policies, require
 from supplyguard_ai.state import Conflict, Evidence
 
 # ---------------------------------------------------------------------------
@@ -171,8 +169,12 @@ def search_documents(query: str, user_role: str, filters: dict | None = None, k:
         "k": max(1, min(k, 20)),
     }
     with _connect() as conn:
-        rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
-    return [
+        try:
+            rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
+        except psycopg.errors.UndefinedTable:
+            raise RuntimeError(f"The document index '{PG_TABLE}' does not exist yet. "
+                               "Run once: uv run python scripts/index_documents.py") from None
+        return [
         Evidence(
             claim=f"{title}\n{content}",
             source_id=source_id,
@@ -185,15 +187,178 @@ def search_documents(query: str, user_role: str, filters: dict | None = None, k:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Conflicts
+# ---------------------------------------------------------------------------
+# policies.json names the source types in order of authority; this maps our doc_type to them.
+# Procedures, incident reports and the finance sheet are not supplier statements: never compared.
+_PRECEDENCE_NAMES = {
+    "contract": "contract (latest version)",
+    "qualification": "qualification record",
+    "supplier_notice": "supplier notice",
+    "email": "supplier e-mail",
+}
+_SAME_INCIDENT_DAYS = 7   # delay statements further apart are separate incidents, not a conflict
+_SCOPE_RANK = {"public": 0, "internal": 1, "procurement": 2, "finance-confidential": 3}
+
+# Which facts we compare, where each one may appear, and how it is written there.
+_PATTERNS = {
+    "lead_time_days": {
+        "contract": [r"lead time[^:]*:\s*\**(\d+)\**\s*calendar days"],
+        "email": [r"(\d+)-day lead time", r"lead time (\d+) days"],
+    },
+    "monthly_capacity": {
+        "contract": [r"monthly capacity[^:]*:\s*\**([\d,]+)\**\s*units"],
+        "email": [r"([\d,]+)\**\s*units (?:per month|/month)"],
+    },
+    "expedite_fee_pct": {
+        "contract": [r"expedite[^.]*?fee:?\s*(\d+(?:\.\d+)?)%"],
+        "email": [r"charge\s*\**(\d+(?:\.\d+)?)%"],
+    },
+    "delay_days": {                      # notices: the stated_delay_days front-matter field
+        "email": [r"delay\b[^.]*?(\d+)\**\s*days"],
+    },
+}
+_FORMATS = {
+    "lead_time_days": ("lead time", "{:,} days"),
+    "monthly_capacity": ("monthly capacity", "{:,}/month"),
+    "expedite_fee_pct": ("expedite fee", "{:g}%"),
+    "delay_days": ("delay", "{:,} days"),
+}
+
+
+@lru_cache
+def _documents_by_id() -> dict[str, dict]:
+    return {doc["source_id"]: doc for doc in load_documents()}
+
+
+@lru_cache
+def _supplier_names() -> dict[str, str]:
+    with (data_dir() / "structured" / "suppliers.csv").open(newline="", encoding="utf-8") as f:
+        return {row["supplier_id"]: row["name"] for row in csv.DictReader(f)}
+
+
+def _rank(doc_type: str) -> int:
+    """0 = most authoritative, following policies.json source_precedence."""
+    return policies()["source_precedence"].index(_PRECEDENCE_NAMES[doc_type])
+
+
+def _number(text: str) -> float:
+    value = float(text.replace(",", ""))
+    return int(value) if value.is_integer() else value
+
+
+def extract_facts(doc: dict) -> dict[str, float]:
+    """The comparable facts one document states, e.g. {'monthly_capacity': 1500, 'lead_time_days': 21}."""
+    facts = {}
+    if doc["doc_type"] == "supplier_notice" and doc["extra"].get("stated_delay_days"):
+        facts["delay_days"] = _number(doc["extra"]["stated_delay_days"])
+    for attribute, by_type in _PATTERNS.items():
+        for pattern in by_type.get(doc["doc_type"], []):
+            match = re.search(pattern, doc["content"], re.IGNORECASE)
+            if match:
+                facts[attribute] = _number(match.group(1))
+                break
+    return facts
+
+
+def _component(doc: dict) -> str | None:
+    """Delays belong to one component: from the front matter, else the first MC-.. in the text."""
+    found = re.search(r"\bMC-\d+\b", doc["content"])
+    return doc["extra"].get("component_id") or (found.group(0) if found else None)
+
+
+def _supplier(doc: dict) -> str:
+    sid = doc["supplier_id"]
+    return f"{_supplier_names().get(sid, sid)} ({sid})"
+
+
+def _show(attribute: str, value: float) -> str:
+    return _FORMATS[attribute][1].format(value)
+
+
+def _choose(attribute: str, claims: list[tuple[dict, float]]) -> tuple[str, str]:
+    """The value we use and why. claims: (document, value), at least two different values."""
+    ordered = sorted(claims, key=lambda c: (_rank(c[0]["doc_type"]), -c[0]["effective_date"].toordinal()))
+    best_doc, best_value = ordered[0]
+    others = [doc for doc, value in ordered[1:] if value != best_value]
+    if all(doc["doc_type"] == best_doc["doc_type"] for doc in others):
+        reason = f"same source type: {best_doc['source_id']} is the most recent ({best_doc['effective_date']})"
+    else:
+        lower = ", ".join(sorted({_PRECEDENCE_NAMES[d["doc_type"]] for d in others}))
+        reason = f"{_PRECEDENCE_NAMES[best_doc['doc_type']]} outranks {lower} (policies.json source_precedence)"
+
+    # Team rule: when the supplier itself states in writing a LOWER capacity than the contract,
+    # the contract stays the official figure but we plan with the lower one.
+    lowest_doc, lowest = min(claims, key=lambda c: c[1])
+    if attribute == "monthly_capacity" and lowest < best_value and lowest_doc["doc_type"] != "contract":
+        return (f"{_show(attribute, lowest)} for planning",
+                f"{reason}, so {_show(attribute, best_value)} stays the official figure; but the supplier "
+                f"states in writing ({lowest_doc['source_id']}) that it can only deliver "
+                f"{_show(attribute, lowest)}, and planning on more would leave production short")
+    if attribute == "delay_days" and max(v for _, v in claims) > best_value:
+        reason += f"; the longer {_show(attribute, max(v for _, v in claims))} is reported as a risk"
+    return _show(attribute, best_value), reason
+
+
+def _version_conflicts(evidence_docs: list[dict]) -> list[Conflict]:
+    """Older versions of retrieved documents: search hides them, but the change must be reported."""
+    conflicts = []
+    for doc in evidence_docs:
+        older = [d for d in _documents_by_id().values()
+                 if d["base_id"] == doc["base_id"] and d["version"] < doc["version"]
+                 and _SCOPE_RANK[d["access_scope"]] <= _SCOPE_RANK[doc["access_scope"]]]  # never reveal more
+        new_facts = extract_facts(doc)
+        for old in older:
+            old_facts = extract_facts(old)
+            changed = [a for a in _FORMATS if a in new_facts and a in old_facts and new_facts[a] != old_facts[a]]
+            if not changed:
+                continue
+            def describe(d, facts):
+                return f"v{d['version']} ({d['effective_date']}): " + ", ".join(
+                    f"{_FORMATS[a][0]} {_show(a, facts[a])}" for a in changed)
+            conflicts.append(Conflict(
+                topic=f"{_supplier(doc)} contract version",
+                values={old["source_id"]: describe(old, old_facts), doc["source_id"]: describe(doc, new_facts)},
+                chosen=doc["source_id"],
+                reason=f"v{old['version']} is superseded by v{doc['version']} effective {doc['effective_date']}; "
+                       "only the latest version in force applies (DOC-PRO-02)",
+            ))
+    return conflicts
+
+
 def find_conflicts(evidence: list[Evidence]) -> list[Conflict]:
-    """Sources that disagree, resolved with policies.json source_precedence."""
-    return [
-        Conflict(topic="Atlas delay", values={"supplier notice": "12 days", "supplier e-mail": "16 days"},
-                 chosen="12 days", reason="STUB: supplier notice outranks supplier e-mail"),
-        Conflict(topic="Helios capacity", values={"contract": "4,000/month", "e-mail": "1,500/month"},
-                 chosen="1,500/month", reason="STUB: role 3 decides with source precedence and recency"),
-        Conflict(topic="Cordillera expedite fee", values={"contract": "6%", "e-mail": "10%"},
-                 chosen="6%", reason="STUB: contract outranks e-mail"),
-        Conflict(topic="Atlas contract version", values={"v2": "10 days", "v3": "14 days"},
-                 chosen="v3", reason="STUB: v2 is superseded"),
-    ]
+    """Sources that disagree, resolved with policies.json source_precedence.
+
+    Compares only the evidence it is given (already filtered by the user's role). The facts
+    are read from the source document itself, so a short claim from the contract agent
+    still counts as its document.
+    """
+    by_id = _documents_by_id()
+    docs = [by_id[sid] for sid in dict.fromkeys(e.source_id for e in evidence) if sid in by_id]
+    sources = [d for d in docs if d["doc_type"] in _PRECEDENCE_NAMES and d["supplier_id"]
+               and d["status"] != "superseded"]
+
+    groups: dict[tuple, list[tuple[dict, float]]] = {}
+    for doc in sources:
+        for attribute, value in extract_facts(doc).items():
+            component = _component(doc) if attribute == "delay_days" else None
+            groups.setdefault((doc["supplier_id"], attribute, component), []).append((doc, value))
+
+    conflicts = []
+    for (supplier_id, attribute, component), claims in groups.items():
+        if attribute == "delay_days":   # keep only statements about the latest incident
+            newest = max(doc["effective_date"] for doc, _ in claims)
+            claims = [(d, v) for d, v in claims if (newest - d["effective_date"]).days <= _SAME_INCIDENT_DAYS]
+        if len({value for _, value in claims}) < 2:
+            continue                                     # every source agrees
+        chosen, reason = _choose(attribute, claims)
+        topic = f"{_supplier(claims[0][0])} {_FORMATS[attribute][0]}" + (f" {component}" if component else "")
+        conflicts.append(Conflict(
+            topic=topic,
+            values={doc["source_id"]: _show(attribute, value) for doc, value in claims},
+            chosen=chosen,
+            reason=reason,
+        ))
+    return sorted(conflicts + _version_conflicts(docs), key=lambda c: c.topic)
+
