@@ -144,6 +144,22 @@ def challenge(state: CaseState) -> dict:
 APPROVE_WORDS = {"approve", "approved", "yes", "ok"}
 REJECT_WORDS = {"reject", "rejected", "no"}
 
+# The agreed format of CaseState.requested_change (role 2's build_options reads it).
+CHANGE_KEYS = ("qty", "supplier_id", "spending_cap_eur", "note")
+
+
+def change_request(details: dict, text: str) -> dict:
+    """Turn what the chat sent with a "change" into the agreed requested_change format.
+
+    The chat (role 5) sends {"decision": "change", "change": "<what the user typed>",
+    "user_id": ..., "user_role": ..., "payload_hash": ...}. Only the agreed keys are kept,
+    and the typed text becomes "note", so build_options always gets the same shape.
+    """
+    change = {key: details[key] for key in CHANGE_KEYS if details.get(key) not in (None, "")}
+    if details.get("change") and "note" not in change:
+        change["note"] = str(details["change"]).strip()
+    return change or {"note": text}
+
 
 def approval(state: CaseState) -> dict:
     """Pause for the human decision on the EXACT payload (no purchase before this).
@@ -167,8 +183,18 @@ def approval(state: CaseState) -> dict:
         text, details = str(decision).strip(), {}
     word = text.lower().strip(".!")
 
+    # A decision made on an older plan must not count for this one (approval binds to
+    # the payload). The chat checks it too; this is the second line of defence.
+    sent_hash = details.get("payload_hash")
+    if sent_hash and sent_hash != request.payload_hash:
+        return {"approval": request,
+                "warnings": state.warnings + ["Ignored a decision made on an older plan (payload changed)."]}
+
+    # Who decided: the approver who clicked (sent by the chat), not who opened the case.
+    decided_by = details.get("user_id") or state.user_id
+
     def decided(status: str, change: dict | None = None) -> dict:
-        return {"approval": request.model_copy(update={"status": status, "decided_by": state.user_id}),
+        return {"approval": request.model_copy(update={"status": status, "decided_by": decided_by}),
                 "requested_change": change}
 
     if word in APPROVE_WORDS:
@@ -176,7 +202,7 @@ def approval(state: CaseState) -> dict:
     if word in REJECT_WORDS:
         return decided("rejected")
     if word.startswith("change"):
-        return decided("changed", details or {"note": text})
+        return decided("changed", change_request(details, text))
     # A question about the proposal: answer it and wait for the decision again.
     answer = followup_answers.answer(state, text)
     return {"approval": request, "followups": state.followups + [FollowUp(question=text, answer=answer)]}
