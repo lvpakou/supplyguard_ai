@@ -103,6 +103,20 @@ def shared_upstream(supplier_id: str) -> list[str]:
     return [row["supplier_id"] for row in rows]
 
 
+def upstream_makers(supplier_id: str) -> list[dict[str, Any]]:
+    """Upstream manufacturers a supplier sources from, with their country and the link's source.
+
+    E.g. S005 -> [{"upstream_id": "U01", "name": "Veltro Semiconductor", "country": "TW",
+    "source_id": "SRC-SUPPLIER-QUESTIONNAIRE-2026"}]. Used by the Deep Agent investigator.
+    """
+    query = """
+    MATCH (:Supplier {supplierId: $supplier_id})-[link:SOURCES_FROM]->(u:Upstream)
+    RETURN u.upstreamId AS upstream_id, u.name AS name, u.country AS country, link.sourceId AS source_id
+    ORDER BY upstream_id
+    """
+    return _run_query(query, supplier_id=supplier_id)
+
+
 def affected_by(component_id: str) -> dict[str, list[str]]:
     """Return product, factory and customer IDs that depend on a component."""
     query = """
