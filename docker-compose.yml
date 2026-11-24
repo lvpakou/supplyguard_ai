@@ -36,12 +36,13 @@ services:
     volumes:
       - chroma_data:/data
 
-  external-info:
+  risk-info:                      # the external risk service (HTTP); role 4 also wraps it as MCP (risk-mcp)
     build:
       context: ./data/external_info_service
-    container_name: external-info
     ports:
       - "8099:8099"
+    volumes:
+      - ./data/external_service/risk_feed.json:/feed/risk_feed.json:ro   # the trainer's feed, not a copy
     restart: unless-stopped
     healthcheck:
       test:

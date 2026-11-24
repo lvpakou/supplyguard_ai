@@ -1,31 +1,35 @@
-
 #!/usr/bin/env python3
-
 """
 Independent external information service.
 
 Endpoints:
     GET /health
-    GET /alerts
-    GET /alerts?region=TW
+    GET /alerts               -> JSON list of all risk alerts
+    GET /alerts?region=TW     -> JSON list of the alerts for one region
+
+The response is a plain JSON list, like the trainer's original service
+(data/external_service/), because the app (integrations/risk.py) and the risk
+MCP server (mcp_servers/risk_info/server.py) read a list.
+
+The feed is the trainer's data/external_service/risk_feed.json (not a copy).
+RISK_FEED_PATH points elsewhere, e.g. the file mounted into the container.
 
 Run:
-    python external_info_service.py
+    python external_info_service.py 8099
 """
 
 import json
-import os
 import logging
-
-from pathlib import Path
+import os
+import signal
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
-
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
-FEED_PATH = BASE_DIR / "risk_feed.json"
-
-PORT = int(os.environ.get("PORT", 8099))
+FEED_PATH = Path(os.environ.get("RISK_FEED_PATH", BASE_DIR.parent / "external_service" / "risk_feed.json"))
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,8 +41,10 @@ def load_feed():
     with open(FEED_PATH, "r", encoding="utf-8") as file:
         feed = json.load(file)
 
-    if not isinstance(feed.get("alerts"), list):
+    if not isinstance(feed, dict) or not isinstance(feed.get("alerts"), list):
         raise ValueError("Invalid risk feed: alerts must be a list")
+    if not all(isinstance(alert, dict) and isinstance(alert.get("region"), str) for alert in feed["alerts"]):
+        raise ValueError("Invalid risk feed: every alert needs a region")
 
     logger.info(
         "Loaded %d alerts (generated: %s)",
@@ -85,7 +91,8 @@ class ExternalInfoHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Endpoint not found"})
             return
 
-        params = parse_qs(parsed.query)
+        # keep_blank_values: "?region=" must be rejected, not read as "no filter"
+        params = parse_qs(parsed.query, keep_blank_values=True)
         regions = params.get("region", [])
 
         if len(regions) > 1:
@@ -113,14 +120,7 @@ class ExternalInfoHandler(BaseHTTPRequestHandler):
                 if alert["region"].upper() == region
             ]
 
-        self.send_json(
-            200,
-            {
-                "generated": FEED.get("generated"),
-                "count": len(alerts),
-                "alerts": alerts
-            }
-        )
+        self.send_json(200, alerts)
 
     def log_message(self, format, *args):
         logger.info(
@@ -130,12 +130,18 @@ class ExternalInfoHandler(BaseHTTPRequestHandler):
         )
 
 
+def stop(signum, frame):
+    """docker stop sends SIGTERM: shut down cleanly instead of waiting to be killed."""
+    raise KeyboardInterrupt
+
+
 def main():
 
     server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
         ExternalInfoHandler
     )
+    signal.signal(signal.SIGTERM, stop)
 
     logger.info(
         "External information service running on port %s",
