@@ -77,5 +77,12 @@ def test_evidence_shows_conflicts_warnings_and_each_document_once():
     assert len(views.documents(values)) == 1
 
 
+def test_the_side_panel_shows_the_document_not_a_later_note_about_it():
+    contract = Evidence(claim="Supply contract - Atlas\nfull text", source_id="DOC-CON-S001-v3", doc_type="contract")
+    note = Evidence(claim="Contract agent, Atlas: v3 applies", source_id="DOC-CON-S001-v3",
+                    doc_type="contract_agent_note")
+    assert views.documents({"evidence": [contract, note]}) == [contract]
+
+
 def test_nothing_to_show_gives_empty_text():
     assert views.impact_view({}) == views.evidence_view({}) == views.options_view({}) == ""

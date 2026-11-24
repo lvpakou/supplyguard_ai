@@ -20,8 +20,12 @@ def _num(value, fmt: str = ",.0f") -> str:
 
 
 def documents(values: dict) -> list[Evidence]:
-    """The case's evidence, once per source."""
-    return list({e.source_id: e for e in values.get("evidence", [])}.values())
+    """The case's evidence, once per source: the first item, i.e. the retrieved document itself,
+    not a later summary of it (a contract finding or a contract-agent note with the same source)."""
+    first: dict[str, Evidence] = {}
+    for e in values.get("evidence", []):
+        first.setdefault(e.source_id, e)
+    return list(first.values())
 
 
 def impact_view(values: dict) -> str:

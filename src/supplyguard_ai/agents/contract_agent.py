@@ -31,7 +31,9 @@ from supplyguard_ai.tools.retrieval import (_SCOPE_RANK, _documents_by_id, _supp
                                             search_documents)
 
 log = logging.getLogger(__name__)
-MAX_STEPS = 40   # LangGraph recursion limit: if the agent runs long, it stops; the code still covers everyone
+# LangGraph recursion limit: if the agent loops, it stops; the code still covers everyone. One tool call
+# costs 2 steps, so 5 suppliers x 3 tools called one by one already need about 32: 40 was too tight.
+MAX_STEPS = 80
 
 PROMPT = """\
 You are the contract specialist of SupplyGuard AI, working for the procurement team of a European \
@@ -60,14 +62,18 @@ def _name(supplier_id: str) -> str:
 def latest_document(supplier_id: str, doc_type: str, user_role: str) -> dict | None:
     """A supplier's newest document of one type, if this role may read it.
 
-    Same rule as the search: the newest version is chosen first, then the role filter, so a role
-    that may not read the newest version gets nothing (never an older version instead).
+    Same rule as the search: superseded documents never count, the newest version is chosen first,
+    then the role filter, so a role that may not read the newest version gets nothing (never an
+    older version instead). A document the injection guard flags never becomes evidence either.
     """
-    docs = [d for d in _documents_by_id().values() if d["supplier_id"] == supplier_id and d["doc_type"] == doc_type]
+    docs = [d for d in _documents_by_id().values() if d["supplier_id"] == supplier_id
+            and d["doc_type"] == doc_type and d.get("status") != "superseded"]
     if not docs:
         return None
     newest = max(docs, key=lambda d: (d["version"], d["effective_date"]))
-    return newest if newest["access_scope"] in scopes_for_role(user_role) else None
+    if newest["access_scope"] not in scopes_for_role(user_role) or _flagged(newest):
+        return None
+    return newest
 
 
 def _evidence(doc: dict, claim: str, doc_type: str) -> Evidence:
@@ -114,12 +120,15 @@ def certification_finding(supplier_id: str, user_role: str) -> Evidence | None:
     return _evidence(doc, claim, "qualification")
 
 
+def _flagged(doc: dict) -> bool:
+    return check_injection(f"{doc['title']}\n{doc['content']}") is not None
+
+
 def _for_llm(doc: dict) -> str:
     """Document text as data for the model, or a short notice if the guard flags it."""
-    text = f"{doc['title']}\n{doc['content']}"
-    if check_injection(text):  # never show it, and never echo the injected words either
+    if _flagged(doc):  # never show it, and never echo the injected words either
         return f"<document source='{doc['source_id']}'>withheld: flagged as a prompt injection</document>"
-    return wrap_untrusted(doc["source_id"], text)
+    return wrap_untrusted(doc["source_id"], f"{doc['title']}\n{doc['content']}")
 
 
 def _run_agent(tools: list, message: str) -> str:
@@ -200,7 +209,8 @@ def analyze_contracts(facts: IncidentFacts, supplier_ids: list[str], user_role: 
         for item in results:
             doc = _documents_by_id().get(item.source_id)
             if doc and doc["doc_type"] not in ("contract", "qualification"):  # those come from the tools above
-                seen.add(doc["source_id"])
+                if not _flagged(doc):        # a withheld document can never be cited in a note
+                    seen.add(doc["source_id"])
                 parts.append(_for_llm(doc))
         return "\n\n".join(parts) or "No notices or e-mails found."
 
