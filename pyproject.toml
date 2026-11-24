@@ -1,13 +1,31 @@
 [project]
 name = "supplyguard-ai"
 version = "0.1.0"
-description = "Add your description here"
+description = "SupplyGuard AI: agentic supply chain disruption and recovery assistant (capstone)"
 readme = "README.md"
 authors = [
     { name = "lvpakou", email = "louise.pakou@gmail.com" }
 ]
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit>=2.12.0",
+    "chromadb>=1.5.9",
+    "deepagents>=0.7.41",
+    "langchain>=1.5.2",
+    "langchain-core>=1.8.4",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain-openai>=1.8.5",
+    "langgraph>=1.2.24",
+    "langgraph-checkpoint-postgres>=3.2.1",
+    "langsmith>=0.16.1",
+    "mcp>=1.30.0",
+    "neo4j>=6.4.1",
+    "pandas>=3.1.1",
+    "pgvector>=0.5.1",
+    "psycopg[binary]>=3.3.9",
+    "pydantic>=2.14.4",
+    "python-dotenv>=1.2.4",
+]
 
 [project.scripts]
 supplyguard-ai = "supplyguard_ai:main"
@@ -15,3 +33,13 @@ supplyguard-ai = "supplyguard_ai:main"
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
