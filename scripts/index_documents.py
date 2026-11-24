@@ -18,6 +18,7 @@ from collections import Counter
 
 import psycopg
 
+from supplyguard_ai.memory import MEMORY_TABLE, seed_memories
 from supplyguard_ai.config import database_url
 from supplyguard_ai.tools.retrieval import (
     CHROMA_COLLECTION,
@@ -139,8 +140,11 @@ def check(stores: set[str], expected: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Index the documents into pgvector and ChromaDB.")
-    parser.add_argument("--only", choices=["pgvector", "chroma"], help="index one store only")
+    parser.add_argument("--only", choices=["pgvector", "chroma", "memories"], help="index one store only")
     args = parser.parse_args()
+    if args.only == "memories":                     # quick: the 40 memories, without re-embedding documents
+        print(f"memories: {seed_memories()} rows in '{MEMORY_TABLE}'")
+        return
     stores = {args.only} if args.only else {"pgvector", "chroma"}
 
     docs = load_documents()
@@ -157,6 +161,7 @@ def main() -> None:
     if "pgvector" in stores:
         write_pgvector(docs, vectors)
         print(f"pgvector: table '{PG_TABLE}' rebuilt")
+        print(f"memories: {seed_memories()} rows in '{MEMORY_TABLE}' (trainer's 40 + our approved cases)")
     if "chroma" in stores:
         write_chroma(docs, vectors)
         print(f"chroma: collection '{CHROMA_COLLECTION}' rebuilt")

@@ -23,7 +23,7 @@ from supplyguard_ai.agents.investigator import investigate
 from supplyguard_ai.config import data_dir
 from supplyguard_ai.integrations import procurement, risk
 from supplyguard_ai.llm import get_llm
-from supplyguard_ai.memory import save_resolution
+from supplyguard_ai.memory import as_evidence, save_resolution, similar_cases
 from supplyguard_ai.report import build_report
 from supplyguard_ai.state import CaseState, Clarification, FollowUp, IncidentFacts
 from supplyguard_ai.tools import critic, guards
@@ -168,11 +168,12 @@ def suppliers_of(component_id: str) -> list[str]:
 
 
 def evidence(state: CaseState) -> dict:
-    """Documents (role 3) + injection guard (role 5) + contract agent (role 3).
+    """Documents + similar past cases (role 3) + injection guard (role 5) + contract agent (role 3).
 
     One general search, plus one search PER SUPPLIER of the component (filter supplier_id),
     so the contract, notices and e-mails of Atlas AND of every alternative come back. That is
     what conflict detection needs (e.g. Helios contract 4,000 vs Helios e-mail 1,500).
+    Similar past cases (incident memories) are added before the guard, like documents.
     """
     facts = state.facts
     topic = f"{facts.component_id or ''} delay lead time capacity expedite fee certification price"
@@ -182,7 +183,15 @@ def evidence(state: CaseState) -> dict:
         results += search_documents(topic, state.user_role, filters={"supplier_id": supplier_id},
                                     k=PER_SUPPLIER_K)
 
-    found, warnings, seen = [], list(state.warnings), set()
+    # Similar past cases (role 3): they go through the same guard as documents.
+    incident = f"{facts.supplier_name or ''} {facts.component_id or ''} {facts.delay_days or ''}-day delay"
+    memory_notes = []
+    try:
+        results += [as_evidence(m) for m in similar_cases(incident, user_role=state.user_role)]
+    except RuntimeError as error:   # memories help but are not required: never stop a case for them
+        memory_notes.append(f"Incident memories not available: {error}")
+
+    found, warnings, seen = [], list(dict.fromkeys(state.warnings + memory_notes)), set()
     for item in results:
         if item.source_id in seen:
             continue                      # the same document from two searches
