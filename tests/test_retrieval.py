@@ -5,9 +5,10 @@ from collections import Counter
 import pytest
 import psycopg
 
+from supplyguard_ai.state import Evidence
 from supplyguard_ai.auth import scopes_for_role
 from supplyguard_ai.config import database_url
-from supplyguard_ai.tools.retrieval import get_embeddings, load_documents, search_documents
+from supplyguard_ai.tools.retrieval import get_embeddings, load_documents, search_documents, extract_facts, find_conflicts
 
 
 @pytest.fixture(scope="module")
@@ -112,4 +113,45 @@ def test_supplier_filter():
                                filters={"supplier_id": "S002"}, k=10)
     assert "DOC-CON-S002-v1" in ids(results)
     assert "DOC-CON-S001-v3" not in ids(results)
-    
+
+
+# --- conflicts: no services needed ------------------------------------------
+GOLDEN_SOURCES = ["DOC-NOT-ATLAS-MC17", "DOC-EM-ATLAS-01", "DOC-CON-S001-v3", "DOC-CON-S002-v1",
+                  "DOC-EM-HELIOS-01", "DOC-CON-S004-v1", "DOC-EM-CORDILLERA-01"]
+
+
+def evidence(*source_ids):
+    return [Evidence(claim="", source_id=sid) for sid in source_ids]
+
+
+def test_the_four_golden_conflicts():
+    found = {c.topic: c for c in find_conflicts(evidence(*GOLDEN_SOURCES))}
+    assert set(found) == {
+        "Atlas Components (S001) contract version",
+        "Atlas Components (S001) delay MC-17",
+        "Cordillera Industrial (S004) expedite fee",
+        "Helios Supply (S002) monthly capacity",
+    }
+    assert found["Atlas Components (S001) delay MC-17"].chosen == "12 days"
+    assert found["Cordillera Industrial (S004) expedite fee"].chosen == "6%"
+    assert found["Helios Supply (S002) monthly capacity"].chosen == "1,500/month for planning"
+    assert found["Atlas Components (S001) contract version"].chosen == "DOC-CON-S001-v3"
+
+
+def test_no_false_conflicts_in_the_whole_corpus(docs):
+    # even if every document were retrieved, only the 4 real conflicts exist
+    assert len(find_conflicts(evidence(*docs))) == 4
+
+
+def test_agreeing_sources_are_not_a_conflict():
+    assert find_conflicts(evidence("DOC-CON-S005-v1", "DOC-EM-DELTA-01")) == []   # Delta: 8 d, 2,500 in both
+
+
+def test_non_supplier_documents_are_ignored():
+    assert find_conflicts(evidence("DOC-INC-HC-001", "DOC-PRO-02-v1", "DOC-FIN-01-v1")) == []
+
+
+def test_contract_notice_clause_is_not_a_delay(docs):
+    # clause 8 "any expected delay exceeding 3 days" is a rule, not a delay
+    assert "delay_days" not in extract_facts(docs["DOC-CON-S001-v3"])
+
