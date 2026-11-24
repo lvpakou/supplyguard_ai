@@ -170,7 +170,7 @@ def search_documents(query: str, user_role: str, filters: dict | None = None, k:
         "scopes": scopes_for_role(user_role),
         "k": max(1, min(k, 20)),
     }
-        with _connect() as conn:
+    with _connect() as conn:
         try:
             rows = conn.execute(_SEARCH_SQL.format(table=PG_TABLE, filters=where), params).fetchall()
         except psycopg.errors.UndefinedTable:
