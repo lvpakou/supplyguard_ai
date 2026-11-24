@@ -79,7 +79,9 @@ async def make_async_checkpointer(database_url: str | None):
 # ---------------------------------------------------------------------------
 # The graph
 # ---------------------------------------------------------------------------
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, interrupt_before=None, interrupt_after=None):
+    """The compiled workflow. interrupt_before/after are only used by the evaluation, to
+    "kill" the app at a given step and test that it resumes (restart_recovery cases)."""
     builder = StateGraph(CaseState)
     for name in ["intake", "clarify", "impact", "evidence", "dependencies", "options",
                  "challenge", "approval", "execute", "report", "followup"]:
@@ -99,7 +101,11 @@ def build_graph(checkpointer=None):
     builder.add_edge("execute", "report")
     builder.add_edge("report", "followup")
     builder.add_edge("followup", "followup")
-    return builder.compile(checkpointer=checkpointer or make_checkpointer())
+    return builder.compile(
+        checkpointer=checkpointer or make_checkpointer(),
+        interrupt_before=interrupt_before,
+        interrupt_after=interrupt_after,
+    )
 
 
 def pending(result: dict) -> dict | None:

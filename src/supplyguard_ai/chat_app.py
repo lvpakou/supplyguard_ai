@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from supplyguard_ai.config import database_url
 from supplyguard_ai.graph import build_graph, make_async_checkpointer
+from supplyguard_ai.tracing import run_config
 
 _graph = None
 
@@ -31,7 +32,8 @@ def no_chainlit_history():
 
 
 def _config(thread_id: str) -> dict:
-    return {"configurable": {"thread_id": thread_id}}
+    # thread_id + the run name, tag and metadata LangSmith shows (tracing.py)
+    return run_config(thread_id, "chat")
 
 
 def route_message(thread_id: str | None, text: str) -> tuple[str | None, object | None, str | None]:
