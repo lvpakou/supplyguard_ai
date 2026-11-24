@@ -39,6 +39,9 @@ def main() -> None:
             return
         if tables:
             conn.execute("TRUNCATE " + ", ".join(f'"{t}"' for t in tables))
+        if "incident_memories" in existing:   # memories of OUR test cases; the trainer's 40 stay
+            deleted = conn.execute("DELETE FROM incident_memories WHERE source <> 'trainer'").rowcount
+            print(f"  incident_memories    {deleted} memories of our own cases removed (trainer's kept)")
         print("Done: saved cases, approvals and procurement records are empty.")
         print("Now restore the operational data: uv run python scripts/load_postgres.py")
 
