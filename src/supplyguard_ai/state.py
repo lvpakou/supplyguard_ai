@@ -197,6 +197,12 @@ class CaseState(BaseModel):
     recommendation: Recommendation | None = None
     critique: list[str] = []                  # what the challenge step found
 
+    # Set by the approval step when the user asks to CHANGE the plan; build_options (role 2)
+    # must respect it, which gives a new payload hash and so a new approval. Cleared after
+    # approve / reject. Agreed format (every key optional):
+    #   {"qty": 6000, "supplier_id": "S004", "spending_cap_eur": 90000, "note": "free text"}
+    requested_change: dict | None = None
+
     approval: ApprovalRequest | None = None
     executions: list[ExecutionResult] = []
     report: str | None = None
