@@ -93,6 +93,9 @@ def test_change_asks_again_and_approve_executes(fake_llm):
     assert pending(changed)["type"] == "approval"           # a change needs a new approval
     assert changed.get("executions", []) == []
 
+    # The change built a new plan, so approve the NEW payload (the old hash no longer counts).
+    who["payload_hash"] = pending(changed)["request"]["payload_hash"]
+
     approved = app.invoke(Command(resume={"decision": "approve", "change": None, **who}), config("case-decide"))
     assert approved["approval"].status == "approved"
     assert [e.status for e in approved["executions"]] == ["done"] * 4
