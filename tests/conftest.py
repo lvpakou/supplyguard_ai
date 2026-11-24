@@ -73,4 +73,11 @@ def no_real_memory(monkeypatch):
     """Graph tests never read or write incident memories in the real database (memory.py is tested directly)."""
     monkeypatch.setattr(nodes, "save_resolution", lambda state: None)
     monkeypatch.setattr(nodes, "similar_cases", lambda *args, **kwargs: [])
+
+
+@pytest.fixture(autouse=True)
+def no_real_contract_agent(monkeypatch):
+    """Graph tests never call Azure for the contract agent (tests/test_contract_agent.py tests it directly)."""
+    monkeypatch.setattr(nodes, "analyze_contracts", lambda *args, **kwargs: [])
+
     
