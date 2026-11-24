@@ -36,13 +36,22 @@ services:
     volumes:
       - chroma_data:/data
 
-  risk-info:                      # the trainer's independent external risk service (HTTP)
-    image: python:3.12-slim       # role 4 wraps it as an MCP server (mcp_servers/risk_info)
-    command: ["python", "/service/external_info_service.py", "8099"]
+  external-info:
+    build:
+      context: ./data/external_info_service
+    container_name: external-info
     ports:
       - "8099:8099"
-    volumes:
-      - ./data/external_service:/service:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   app:                            # the Chainlit chat
     build: .
