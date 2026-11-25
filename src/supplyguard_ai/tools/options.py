@@ -228,12 +228,19 @@ def build_options(state: CaseState) -> tuple[list[Option], Recommendation]:
     if len(pool) and remaining > 0:
         main = pool.iloc[0].to_dict()
         capacity = capacity_from_checks(state, main["supplier_id"], main["capacity"])
-        qty = int(change.get("qty") or max(main["moq"], min(remaining, capacity)))
+        asked = int(change.get("qty") or 0)
+        qty = asked or max(main["moq"], min(remaining, capacity))
         purchase = purchase_option(component, main, qty, capacity,
                                    ": the user's change" if change else ": independent upstream")
         if isinstance(main.get("rejected_because"), str):
             purchase.feasible, purchase.rejected_because = False, main["rejected_because"]
         purchases.append(purchase)
+        if asked > capacity and not isinstance(main.get("rejected_because"), str):
+            # More than the supplier can deliver: keep the refused option (the critic reports it)
+            # and plan the most it can deliver, instead of dropping the purchase.
+            purchase = purchase_option(component, main, max(main["moq"], capacity), capacity,
+                                       f": the user's change ({asked:,} asked, capped at the monthly capacity)")
+            purchases.append(purchase)
         if purchase.feasible:
             remaining -= purchase.covered_units
 

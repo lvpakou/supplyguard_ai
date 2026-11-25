@@ -91,15 +91,16 @@ def test_feasible_change_of_quantity_builds_a_new_plan():
     assert "Changed at the approval" in rec.summary
 
 
-def test_quantity_above_capacity_is_kept_out_of_the_plan():
+def test_quantity_above_capacity_is_capped_not_dropped():
     options, rec = build_options(case({"qty": 6000}))
-    purchase = by_title(options, "Buy 6,000 from Cordillera")
-    assert not purchase.feasible and "exceed the monthly capacity of 3,000" in purchase.rejected_because
-    assert purchase not in rec.options                          # can never be approved and executed
-    assert all(o.feasible for o in rec.options)
-    assert rec.total_cost_eur == 96 + 882                       # transfers + expedite only
-    assert rec.uncovered_units == 5350 - 1500                   # the purchase covers nothing
-    assert "NOT in the plan" in rec.summary
+    asked = by_title(options, "Buy 6,000 from Cordillera")
+    assert not asked.feasible and "exceed the monthly capacity of 3,000" in asked.rejected_because
+    assert asked not in rec.options                              # can never be approved and executed
+    capped = by_title(rec.options, "Buy 3,000 from Cordillera")
+    assert capped.feasible and capped.actions[0].payload["qty"] == 3000
+    assert rec.total_cost_eur == pytest.approx(96 + 882 + 3000 * 9.80)
+    assert rec.uncovered_units == 5350 - 1500 - 3000
+    assert "NOT in the plan" in rec.summary and "capped" in rec.summary
 
 
 def test_component_without_plant_demand_does_not_crash():
