@@ -19,11 +19,13 @@ from supplyguard_ai.config import policies, require
 from supplyguard_ai.state import Action, ApprovalRequest, Recommendation
 
 
-def payload_hash(recommendation: Recommendation) -> str:
+def payload_hash(recommendation: Recommendation, change: dict | None = None) -> str:
     payloads = [
         {"operation": a.operation, "payload": a.payload}
         for option in recommendation.options for a in option.actions
     ]
+    if change:  # a change at the approval always needs a NEW approval, even if the plan comes out the same
+        payloads.append({"requested_change": change})
     return hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -34,8 +36,9 @@ def approver_for(total_cost_eur: float) -> str:
     return "not allowed: above every approval tier"
 
 
-def build_request(case_id: str, recommendation: Recommendation) -> ApprovalRequest:
-    digest = payload_hash(recommendation)
+def build_request(case_id: str, recommendation: Recommendation,
+                  change: dict | None = None) -> ApprovalRequest:
+    digest = payload_hash(recommendation, change)
     return ApprovalRequest(
         approval_id=f"APR-{case_id[:8]}-{digest[:6]}",
         payload_hash=digest,

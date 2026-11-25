@@ -128,3 +128,12 @@ def test_change_supplier_to_borealis_is_built_but_not_allowed():
 def test_lower_cap_is_reported():
     _, rec = build_options(case({"spending_cap_eur": 20000}))
     assert "exceeds the cap of EUR 20,000" in rec.summary
+
+
+def test_change_above_capacity_still_needs_a_new_approval():
+    from supplyguard_ai.approval import build_request
+    _, before = build_options(case())
+    _, after = build_options(case({"qty": 6000}))   # capped to 3,000: the same actions as before
+    first = build_request("test", before)
+    second = build_request("test", after, {"qty": 6000})
+    assert second.payload_hash != first.payload_hash   # EV-0096: new approval, new hash

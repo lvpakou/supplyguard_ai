@@ -255,7 +255,7 @@ def approval(state: CaseState) -> dict:
       anything else, e.g. "Why not Helios?"         -> a question: answered, and we keep waiting
                                                        (a question must never count as a reject)
     """
-    request = approval_rules.build_request(state.case_id, state.recommendation)
+    request = approval_rules.build_request(state.case_id, state.recommendation, state.requested_change)
     decision = interrupt({"type": "approval", "request": request.model_dump(),
                           "summary": state.recommendation.summary})
 
