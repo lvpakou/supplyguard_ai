@@ -16,8 +16,15 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("supplyguard-procurement")
+# DNS-rebinding protection stays on, but also accepts the Docker service name. FastMCP's default
+# (host 127.0.0.1) allows only localhost, and setting mcp.settings.host later does not change that:
+# the chat container calls http://procurement-mcp:8000/mcp and got "Invalid Host header" (421).
+ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*", "procurement-mcp:*"]
+mcp = FastMCP("supplyguard-procurement", transport_security=TransportSecuritySettings(
+    enable_dns_rebinding_protection=True, allowed_hosts=ALLOWED_HOSTS,
+    allowed_origins=[f"http://{host}" for host in ALLOWED_HOSTS]))
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://supplyguard:supplyguard@localhost:5433/supplyguard",

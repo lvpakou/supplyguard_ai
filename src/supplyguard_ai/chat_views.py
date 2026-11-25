@@ -149,7 +149,12 @@ def approval_view(values: dict, request: ApprovalRequest, roles: list[str], miss
 def closing_view(values: dict) -> str:
     """What was decided and done; the full report is attached as a file."""
     approval, executions = values.get("approval"), values.get("executions", [])
-    if approval and approval.status == "approved":
+    failed = [e for e in executions if e.status not in ("done", "already_done")]
+    if approval and approval.status == "approved" and failed:
+        # Never claim it ran: say plainly how many approved actions the procurement system refused.
+        lines = [f"### ⚠️ Approved (EUR {approval.total_cost_eur:,.0f}), but {len(failed)} of {len(executions)} "
+                 "actions were NOT executed"]
+    elif approval and approval.status == "approved":
         lines = [f"### ✅ Approved and executed: EUR {approval.total_cost_eur:,.0f}"]
     elif approval:
         lines = [f"### ❌ {approval.status.capitalize()}: nothing was executed"]

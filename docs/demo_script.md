@@ -9,7 +9,9 @@ uv run python scripts/reset_demo.py --yes    # forget old cases, approvals, proc
 uv run python scripts/load_postgres.py       # restore the operational data (approved actions change it)
 uv run python scripts/index_documents.py
 uv run python scripts/load_graph.py
-uv run chainlit run src/supplyguard_ai/chat_app.py
+uv run chainlit run src/supplyguard_ai/chat_app.py   # macOS / Linux -> http://localhost:8000
+# Windows: the local chat cannot use async Postgres; run it in Docker instead -> http://localhost:8010
+# docker compose --profile app up -d --build
 ```
 Open two browser windows: one normal (Maria), one private (Paul). Open LangSmith → project
 `supplyguard-ai` → Threads. Have `docs/evaluation.md` ready.
@@ -25,7 +27,7 @@ Open two browser windows: one normal (Maria), one private (Paul). Open LangSmith
 | 6 | Role 2 | The approval card | exact actions: 2 transfers, expedite PO-2026-9002 (6%), 3,000 units from Cordillera → **€30,378**, under the €75,000 cap; 850 units → reschedule / reallocate; revenue at risk shown separately |
 | 7 | Role 5 | Click **Approve** as Maria | "Still needed: finance_controller" — **nothing is ordered yet** |
 | 8 | Role 5 | Private window: sign in as **u-fc-01** (Paul Novak) → Open the waiting request → **Approve** | execute → report: 4 actions done once |
-| 9 | Role 1 | Stop Chainlit (Ctrl+C), start it again, sign in as Maria, type **resume** → Open | the case is still there after the restart, nothing executed twice |
+| 9 | Role 1 | Stop Chainlit (Ctrl+C) and start it again (Docker: `docker compose restart app`), sign in as Maria, type **resume** → Open | the case is still there after the restart, nothing executed twice |
 | 10 | Role 5 | Ask: *Why did you reject Supplier Helios?* · *What changes if we increase the spending limit to €90,000?* | answers from the saved case, numbers recomputed |
 | 11 | Role 1 | LangSmith Threads | the whole case step by step; evaluation score per category (`docs/evaluation.md`) |
 | 12 | Role 5 | Optional: Postgres `approval_decisions` | audit trail: who approved what, when, for which payload hash |

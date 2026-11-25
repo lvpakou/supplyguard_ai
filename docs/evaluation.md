@@ -133,9 +133,10 @@ held-out set (12 attacks, 10 harmless sentences) and never used it to write a ru
 | **offline OVERALL** | **0.40** (21/53) | **0.87** (46/53) | both measured, same 53 checks |
 
 The other 71 checks (controls, access, abstention, memories, e2e) were 71/71 before the fix and do not
-depend on the new rules (e2e only needs the Helios notice flagged, which it still is). Not re-run yet:
-the expected full score is **0.94** (117 of 124), against 0.74 (92 of 124) for the old guard on the same
-checks. Replace this line with the measured number after `uv run python scripts/eval_rag_safety.py --e2e`.
+depend on the new rules (e2e only needs the Helios notice flagged, which it still is). Measured
+2026-11-25 with `uv run python scripts/eval_rag_safety.py --e2e`: **0.94** (117 of 124), as expected,
+against 0.74 (92 of 124) for the old guard on the same checks. The 71 other checks are still 71/71; the
+7 misses are all in guard_holdout (listed below).
 
 What changed: every invisible format character is dropped (soft hyphen too), accents are removed,
 look-alike Cyrillic/Greek letters inside Latin words become Latin, spaced-out letters are joined;
@@ -150,3 +151,23 @@ you were told", "override the safety rules", "no need for a human to sign off", 
 `display:none` block, "Dear AI model: ...", "act as the administrator". Keyword rules will always miss
 some paraphrases; the next step is a second opinion from a classifier (an LLM check or Azure AI Content
 Safety Prompt Shields) on texts the rules let through, measured on this same held-out set.
+
+## Manual end-to-end test in the Docker chat (2026-11-25)
+The scripts above never write to the real procurement system (in-memory fake), so the full chat was also
+tested by hand in Docker, with every role (`users.csv`). It found what the automatic runs could not:
+
+| Found | Fix |
+|---|---|
+| Every approved action came back *"refused (procurement system unavailable)"*, and the risk alerts were silently empty: FastMCP's default only accepts `localhost`, the chat container calls `procurement-mcp` / `risk-mcp` | the MCP servers allow their service names (protection stays on for other hosts); `tests/test_mcp_servers.py` |
+| The closing card said "Approved and executed" although all 4 actions were refused | it now says how many actions were NOT executed; `tests/test_chat_views.py` |
+| "Make the quantity 6,000" (above Cordillera's 3,000/month) drops the whole purchase: EUR 978, 3,850 units uncovered | proposed to role 2: cap at the capacity instead (open) |
+| `factory_access` in `users.csv` is not used; follow-ups can guess or repeat a claimed role; a question with no open case starts a new case | listed in `architecture.md` §9 (limitations) |
+
+Checked and correct: two signatures above EUR 25,000 (procurement manager, then finance controller) and
+one below; after the MCP fix the approved actions are executed with references and the TW risk alert is
+shown; buttons only for the roles of the tier (analyst, incident coordinator, viewer: none); typed "approve"
+refused; reject executes nothing; no margins or finance documents for the analyst, also when asked to "act
+as the administrator"; "Atlas" asks which supplier; **resume** reopens a saved case. Still to check by hand:
+an old card refused after a change, each action once in `procurement_action_audit`, resume after
+`docker compose restart app` with the MCP fix. Trainer's cases on 2026-11-25: golden +
+extraction_and_impact 60 of 60 (the run was stopped there; the other categories are run separately).

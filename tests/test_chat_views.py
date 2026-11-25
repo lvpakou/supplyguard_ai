@@ -94,5 +94,18 @@ def test_closing_lists_what_was_done():
     assert "- New purchase order: done (PO-MCP-00001)" in text and "incident-report.md" in text
 
 
+def test_closing_never_claims_refused_actions_ran():
+    values = {"approval": ApprovalRequest(approval_id="APR-1", payload_hash="abc", total_cost_eur=30378,
+                                          approver_role="x", status="approved"),
+              "executions": [ExecutionResult(operation="request_stock_transfer", idempotency_key="k1", status="done",
+                                             reference="TR-1"),
+                             ExecutionResult(operation="create_purchase_order", idempotency_key="k2",
+                                             status="refused", message="procurement system unavailable")]}
+    text = views.closing_view(values)
+    assert text.startswith("### ⚠️ Approved (EUR 30,378), but 1 of 2 actions were NOT executed")
+    assert "executed: EUR" not in text
+    assert "- New purchase order: refused (procurement system unavailable)" in text
+
+
 def test_nothing_to_show_gives_empty_text():
     assert views.impact_view({}) == views.evidence_view({}) == views.options_view({}) == ""
