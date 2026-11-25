@@ -36,13 +36,18 @@ def test_evidence_counts_sources_and_names_what_each_conflict_settled():
     values = {
         "conflicts": [Conflict(topic="Atlas delay", values={"DOC-NOT-ATLAS-MC17": "12 days", "DOC-EM-ATLAS-01": "16 days"},
                                chosen="12 days", reason="notice outranks e-mail")],
-        "warnings": ["Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction (overrides our instructions): 'ignore all'"],
+        "warnings": ["Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction (overrides our instructions): 'ignore all'",
+                     "Security finding: ignored an instruction in the user's message "
+                     "(suspicious instruction (pretends to be a system message): 'SYSTEM:')"],
         "evidence": [notice, note],
     }
     text = views.evidence_view(values)
     assert "- **1 source read**, filtered by your role: 1 notices." in text       # the note counts with its document
     assert "- **1 conflict between sources settled** (contract > certificate > notice > e-mail): Atlas delay: **12 days**." in text
-    assert "- ⚠️ Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction" in text and "ignore all" not in text
+    assert "- ⚠️ Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction (overrides our instructions)\n" in text
+    assert ("- ⚠️ Security finding: ignored an instruction in the user's message (suspicious instruction "
+            "(pretends to be a system message))") in text
+    assert "ignore all" not in text and "SYSTEM:" not in text                   # injected words never repeated
 
 
 def test_options_show_the_plan_the_rejections_and_the_risks():

@@ -95,10 +95,16 @@ def evidence_view(values: dict) -> str:
         settled = " · ".join(f"{c.topic}: **{c.chosen}**" for c in conflicts)
         lines.append(f"- **{_count(len(conflicts), 'conflict')} between sources settled** (contract > certificate > notice > "
                      f"e-mail): {settled}.")
-    for w in warnings:   # e.g. "Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction (...): '...'"
-        short = re.match(r".*?suspicious instruction", w)
-        lines.append(f"- ⚠️ {short.group(0) if short else w}")
+    lines += [f"- ⚠️ {_warning(w)}" for w in warnings]
     return "\n".join(lines)
+
+
+def _warning(w: str) -> str:
+    """A warning without the quoted injected words (never repeat them), brackets balanced:
+    "Ignored DOC-X: suspicious instruction (overrides our instructions): 'ignore all ...'"
+    -> "Ignored DOC-X: suspicious instruction (overrides our instructions)" """
+    short = re.sub(r":\s*'.*'\)*$", "", w)
+    return short + ")" * (short.count("(") - short.count(")"))
 
 
 def options_view(values: dict) -> str:
