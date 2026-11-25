@@ -28,25 +28,35 @@ from supplyguard_ai.evaluation import Runner, load_cases, run_case, score  # noq
 DATASET_NAME = "supplyguard-eval-105"
 
 
-def run_locally(category: str | None, use_judge: bool) -> None:
+def run_locally(category: str | None, use_judge: bool, sample: int | None = None) -> None:
+    from langchain_core.callbacks import get_usage_metadata_callback
+
     runner = Runner()
     totals, counts = defaultdict(float), defaultdict(int)
-    for case in load_cases():
-        if category and case["category"] != category:
-            continue
-        try:
-            result = score(case, run_case(case, runner), use_judge)
-        except Exception as error:  # one broken case must not stop the run
-            result = {"key": case["category"], "score": 0, "comment": f"ERROR {type(error).__name__}: {error}"}
-        totals[result["key"]] += result["score"]
-        counts[result["key"]] += 1
-        mark = "ok  " if result["score"] == 1 else "FAIL"
-        print(f"{mark} {case['id']} {case['category']:<26} {result['comment'][:110]}")
+    seen = defaultdict(int)
+    with get_usage_metadata_callback() as usage:  # counts the tokens of every model call
+        for case in load_cases():
+            if category and case["category"] != category:
+                continue
+            if sample and seen[case["category"]] >= sample:  # only the first N of each category
+                continue
+            seen[case["category"]] += 1
+            try:
+                result = score(case, run_case(case, runner), use_judge)
+            except Exception as error:  # one broken case must not stop the run
+                result = {"key": case["category"], "score": 0, "comment": f"ERROR {type(error).__name__}: {error}"}
+            totals[result["key"]] += result["score"]
+            counts[result["key"]] += 1
+            mark = "ok  " if result["score"] == 1 else "FAIL"
+            print(f"{mark} {case['id']} {case['category']:<26} {result['comment'][:110]}")
     print("\nScore per category:")
     for key in counts:
         print(f"  {key:<26} {totals[key] / counts[key]:.2f}  ({counts[key]} cases)")
     overall = sum(totals.values()) / max(sum(counts.values()), 1)
     print(f"  {'OVERALL':<26} {overall:.2f}  ({sum(counts.values())} cases)")
+    print("\nTokens used (answers from the cache count too; run with LLM_CACHE=0 for the real cost):")
+    for model, u in usage.usage_metadata.items():
+        print(f"  {model}: in {u['input_tokens']:,} | out {u['output_tokens']:,} | total {u['total_tokens']:,}")
 
 
 def run_in_langsmith(use_judge: bool) -> None:
@@ -76,9 +86,10 @@ def main() -> None:
     parser.add_argument("--local", action="store_true", help="print scores here, send nothing to LangSmith")
     parser.add_argument("--no-judge", action="store_true", help="skip the LLM-as-judge")
     parser.add_argument("--category", help="run only one category")
+    parser.add_argument("--sample", type=int, help="only the first N cases of each category")
     args = parser.parse_args()
     if args.local:
-        run_locally(args.category, not args.no_judge)
+        run_locally(args.category, not args.no_judge, args.sample)
     else:
         run_in_langsmith(not args.no_judge)
 

@@ -3,6 +3,7 @@
 import os
 
 os.environ.setdefault("LANGSMITH_TRACING", "false")  # fast tests send nothing to LangSmith
+os.environ.pop("LLM_CACHE", None)                    # tests never use the local answer cache
 
 import pytest  # noqa: E402
 
