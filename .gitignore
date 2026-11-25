@@ -36,3 +36,6 @@ Thumbs.db
 # Chainlit runtime files
 .files/
 .chainlit/translations/
+
+# LLM answer cache (dev/eval only, created when LLM_CACHE=1)
+.llm_cache.sqlite

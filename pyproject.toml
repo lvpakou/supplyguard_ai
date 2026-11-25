@@ -12,6 +12,7 @@ dependencies = [
     "chromadb>=1.5.9",
     "deepagents>=0.7.41",
     "langchain>=1.5.2",
+    "langchain-community>=0.4.2",
     "langchain-core>=1.8.4",
     "langchain-mcp-adapters>=0.3.2",
     "langchain-openai>=1.8.5",
