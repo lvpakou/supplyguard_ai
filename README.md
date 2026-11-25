@@ -142,6 +142,8 @@ More detail, in `docs/`:
 | Empty supplier table / no dependency notes | `uv run python scripts/load_graph.py` |
 | *"Connection error"* in the logs | Azure is unreachable (network/VPN). The agents fall back to their code checks; search needs Azure |
 | `pytest` blocked on Windows | Use `uv run python -m pytest` |
+| Approved actions *"refused (procurement system unavailable)"* in the Docker chat | Rebuild the MCP servers: `docker compose up -d --build procurement-mcp risk-mcp` (they must accept the Docker service names) |
+| A new MC-17 case has no transfers (*"Transfer 0 hub units"*) or expedites `PO-MCP-…` | An earlier test executed its actions and changed the data: `uv run python scripts/reset_demo.py --yes` then `uv run python scripts/load_postgres.py` |
 
 ## Team and ownership
 | Role | Person | Main files |

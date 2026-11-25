@@ -19,8 +19,15 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("supplyguard-risk-info")
+# DNS-rebinding protection stays on, but also accepts the Docker service name (the chat container
+# calls http://risk-mcp:8000/mcp). FastMCP's default allows only localhost, and setting
+# mcp.settings.host later does not change that, so the chat silently got no risk alerts.
+ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*", "risk-mcp:*"]
+mcp = FastMCP("supplyguard-risk-info", transport_security=TransportSecuritySettings(
+    enable_dns_rebinding_protection=True, allowed_hosts=ALLOWED_HOSTS,
+    allowed_origins=[f"http://{host}" for host in ALLOWED_HOSTS]))
 RISK_SERVICE_URL = os.getenv("RISK_SERVICE_URL", "http://localhost:8099").rstrip("/")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("RISK_SERVICE_TIMEOUT_SECONDS", "5"))
 

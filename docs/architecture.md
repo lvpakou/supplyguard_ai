@@ -113,3 +113,13 @@ what lets five people work in parallel: `IncidentFacts`, `ImpactSummary`, `Evide
 - Conflict detection reads a fixed set of facts (lead time, capacity, expedite fee, delay) with patterns tuned to the provided documents.
 - Demo login uses one shared password; there is no real identity provider.
 - Revenue at risk is exposure (orders due within 60 days), not an expected loss.
+- `users.csv` has a `factory_access` column, but the app does not filter by plant: every role sees the
+  impact for all plants. Access control covers documents (`document_scopes`, tested per role and search
+  mode in `scripts/eval_rag_safety.py`) and approvals (tiers), not plant data.
+- **resume** lists only the cases you started: an approver (e.g. the finance controller) reaches a case
+  through **Open** on the waiting request, and cannot reopen it after it is decided.
+- A message typed with no open case always starts a new case: a question such as "Why not Helios?"
+  gets a clarification ("which supplier, component, delay?") instead of "open a case first".
+- Follow-up answers come from the LLM over the saved case: they can add an unsupported guess (e.g. which
+  plant makes a product) or repeat a role the user claims; nothing is approved or revealed that the role
+  may not see, because approval needs the buttons and documents are filtered before the LLM reads them.

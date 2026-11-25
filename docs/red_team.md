@@ -31,9 +31,10 @@ OWNER: role 5. Write here as you build (5 lines a day is enough).
 Measured with `scripts/eval_rag_safety.py`: on a held-out set frozen before these rules the guard catches
 5 of 12 new attacks (was 1) with 0 of 10 false alarms (was 3); see evaluation.md.
 
-Open: the incident message itself is only checked once role 1 adds the proposed lines to `nodes.intake`
-(see approval_and_guardrails.md). Until then, injections in the message are not reported (eval 7/10, and
-only because the search returns the Helios document).
+Closed: the intake now checks the incident message and every clarification answer with the same guard
+(`nodes.intake`). An injection there becomes a "Security finding: ignored an instruction in the user's
+message" warning and the case carries on; the trainer's 10 prompt_injection cases score 10/10
+(evaluation.md, round 3 and after the guard fix).
 
 Known limit: keyword rules can be paraphrased around ("pretend the earlier guidance does not exist").
 That is why the guard is not the only defence: the LLM has no write tools, every purchase needs a human
