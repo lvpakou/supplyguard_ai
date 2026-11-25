@@ -83,8 +83,8 @@ uv run python scripts/eval_rag_safety.py --e2e       # + the graph end to end (s
 |---|---|---|
 | guard_corpus | 2 | the planted injection (DOC-NOT-HELIOS-PRICE) is caught; no false alarm on the other 211 documents |
 | guard_known | 6 | attacks already in the trainer's cases or red_team.md |
-| guard_new | 11 | attacks the guard has never seen: paraphrases, a Cyrillic letter, spaced letters, Greek, a fake role claim |
-| guard_benign | 8 | normal business sentences that look like attacks ("SYSTEM: ERP maintenance ...") must NOT be flagged |
+| guard_new | 11 | our first new attacks (paraphrases, a Cyrillic letter, spaced letters, Greek, a fake role claim): unseen at the first run, in view while fixing the guard |
+| guard_benign | 8 | normal business sentences that look like attacks ("SYSTEM: ERP maintenance ...") must NOT be flagged; in view while fixing the guard |
 | guard_holdout | 12 | HELD-OUT attacks, written and frozen before the guard fix: never used to write a rule |
 | guard_holdout_benign | 10 | HELD-OUT harmless sentences, frozen at the same time |
 | wrapper | 4 | a document cannot close `wrap_untrusted`'s `<document>` early |
@@ -94,7 +94,9 @@ uv run python scripts/eval_rag_safety.py --e2e       # + the graph end to end (s
 | memories | 7 | incident memories follow the same scopes |
 | e2e | 9 | MC-17 as viewer and as procurement manager: evidence in scope, poisoned notice dropped and reported; 3 follow-ups never reveal the margins (18 / 24 / 31 %, only in DOC-FIN-01) |
 
-### 2026-11-25 · first run · OVERALL 0.82 (84 of 102)
+### 2026-11-25 · first run (old guard) · OVERALL 0.82 (84 of 102, with `--e2e`)
+Without `--e2e`: 0.81 (75 of 93). The held-out categories did not exist yet.
+
 | Category | Score | Notes |
 |---|---|---|
 | guard_corpus | 1.00 | |
@@ -114,7 +116,7 @@ new. It is not the only defence (the LLM has no write tools, every purchase need
 bound to the payload, flagged documents never reach an LLM), so a miss does not lead to an action,
 but the guard numbers above are its real strength.
 
-### 2026-11-25 · guard fix (tools/guards.py) · offline part
+### 2026-11-25 · guard fix (tools/guards.py) · offline OVERALL 0.40 → 0.87 (21 → 46 of 53)
 The first run showed the guard only knew the trainer's phrasing. Before changing it we froze a
 held-out set (12 attacks, 10 harmless sentences) and never used it to write a rule: after the fix
 `guard_new` / `guard_benign` were in view and count as seen, so **guard_holdout is the fair score**.
@@ -128,6 +130,12 @@ held-out set (12 attacks, 10 harmless sentences) and never used it to write a ru
 | **guard_holdout** | **0.08** | **0.42** | 1 → 5 of 12 caught |
 | **guard_holdout_benign** | **0.70** | **1.00** | no false alarm |
 | wrapper | 0.50 | 1.00 | closing tag matched in any case / spacing |
+| **offline OVERALL** | **0.40** (21/53) | **0.87** (46/53) | both measured, same 53 checks |
+
+The other 71 checks (controls, access, abstention, memories, e2e) were 71/71 before the fix and do not
+depend on the new rules (e2e only needs the Helios notice flagged, which it still is). Not re-run yet:
+the expected full score is **0.94** (117 of 124), against 0.74 (92 of 124) for the old guard on the same
+checks. Replace this line with the measured number after `uv run python scripts/eval_rag_safety.py --e2e`.
 
 What changed: every invisible format character is dropped (soft hyphen too), accents are removed,
 look-alike Cyrillic/Greek letters inside Latin words become Latin, spaced-out letters are joined;
