@@ -196,11 +196,18 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(url)
 
 
+_INDEXED_FIELDS = ("base_id", "doc_type", "title", "supplier_id", "version", "effective_date",
+                   "access_scope", "status", "path", "content")   # what the search reads, not only the text
+
+
 def index_differences() -> dict[str, set[str]]:
-    """Files vs pgvector: what changed since the last index_documents.py run."""
-    files = {d["source_id"]: d["content"] for d in load_documents()}
+    """Files vs pgvector: what changed since the last index_documents.py run (also a changed
+    access_scope or status, which decide who may read a document and which version is in force).
+    Chroma is not compared: index_documents.py fills both stores from the same files."""
+    files = {d["source_id"]: tuple(d[f] for f in _INDEXED_FIELDS) for d in load_documents()}
     with _connect() as conn:
-        indexed = dict(conn.execute(f"SELECT source_id, content FROM {PG_TABLE}").fetchall())
+        rows = conn.execute(f"SELECT source_id, {', '.join(_INDEXED_FIELDS)} FROM {PG_TABLE}").fetchall()
+    indexed = {row[0]: tuple(row[1:]) for row in rows}
     return {
         "not_indexed": files.keys() - indexed.keys(),
         "removed": indexed.keys() - files.keys(),

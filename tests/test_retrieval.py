@@ -1,9 +1,10 @@
 """Tests for role 3 (documents and retrieval). These need no Azure, Postgres or Chroma."""
 
-
 import csv
-import pytest
+from collections import Counter
+
 import psycopg
+import pytest
 
 from supplyguard_ai.state import Evidence
 from supplyguard_ai.auth import scopes_for_role
@@ -42,6 +43,15 @@ def test_every_listed_document_loads_once(docs):
 
 def test_only_known_document_types(docs):
     assert {d["doc_type"] for d in docs.values()} <= KNOWN_TYPES
+
+
+def test_the_trainers_212_documents_are_all_there(docs):
+    # The data package is fixed ("load it, don't change it"): a missing or retyped document is a bug.
+    assert len(docs) == 212
+    assert Counter(d["doc_type"] for d in docs.values()) == {
+        "contract": 61, "qualification": 60, "supplier_notice": 42, "incident_report": 30,
+        "procedure": 12, "email": 6, "finance": 1,
+    }
 
 
 def test_atlas_contract_versions_share_one_base_id(docs):
