@@ -14,8 +14,8 @@ after a restart. Typed text never decides an approval.
 Follow-ups: a question typed while the approval waits, or after the decision, is answered from
 the saved case (followup.py); the answer is shown and the case keeps waiting where it was.
 
-Investigation: before each new approval request, three messages show the impact, the evidence
-with clickable sources and resolved conflicts, and the recovery options compared (chat_views.py).
+Display (chat_views.py): short messages, each a heading plus a few lines. Before each new approval
+request: impact, evidence, options. When the case closes, the full report is attached as a file.
 """
 
 import hmac
@@ -90,11 +90,10 @@ async def greet() -> None:
     user = cl.user_session.get("user")
     scopes = ", ".join(document_scopes(user.identifier))
     await cl.Message(
-        f"### 👋 {user.metadata['name']} · {user.metadata['role'].replace('_', ' ')}\n"
-        f"Documents you may read: {scopes}.\n\n"
-        "Describe a supply disruption: supplier, component, delay and budget. I investigate it, compare "
-        "recovery options and ask for approval before anything is ordered.\n\n"
-        "_Type **resume** to reopen a saved case, or **new** to start over._").send()
+        f"### 👋 {user.metadata['name']} ({user.metadata['role'].replace('_', ' ')})\n"
+        "Describe a supply disruption: supplier, component, delay and budget. I investigate it and propose a "
+        "plan; nothing is ordered without approval.\n\n"
+        f"_You may read {scopes} documents. Type **resume** for a saved case, **new** to start over._").send()
     waiting = await open_approvals(user.metadata["role"]) if database_url() else []
     if waiting:
         lines = ["### ✍️ Waiting for your approval", ""]
@@ -302,22 +301,16 @@ async def show(values: dict, interrupts, details: bool = False) -> None:
             await show_investigation(values)
         await show_approval(values, ApprovalRequest(**payload["request"]))
     elif payload["type"] == "followup" and values.get("report"):
-        # Answers are shown by run() as they come; here the case is closed: what was done, report on the side.
-        await send(views.closing_view(values), values)
-
-
-async def send(text: str, values: dict, actions: list | None = None) -> None:
-    """A message, with the side panels it names (a document id, "Incident report", ...) attached."""
-    elements = [cl.Text(name=name, content=content, display="side")
-                for name, content in views.side_panels(values).items() if name in text]
-    await cl.Message(text, elements=elements, actions=actions or []).send()
+        # Answers are shown by run() as they come; here the case is closed: what was done, the report as a file.
+        report = cl.File(name=views.REPORT_FILE, content=values["report"].encode("utf-8"), mime="text/markdown")
+        await cl.Message(views.closing_view(values), elements=[report]).send()
 
 
 async def show_investigation(values: dict) -> None:
-    """Impact, evidence and options: three short messages, long material in the side panel."""
+    """Impact, evidence and options: three short messages."""
     for text in (views.impact_view(values), views.evidence_view(values), views.options_view(values)):
         if text:
-            await send(text, values)
+            await cl.Message(text).send()
 
 
 async def show_approval(values: dict, request: ApprovalRequest) -> None:
@@ -330,4 +323,4 @@ async def show_approval(values: dict, request: ApprovalRequest) -> None:
                for d, label in DECISIONS if approvals.can_decide(role, request, d)]
     if not buttons:
         text += f"\n\n_Your role ({role}) cannot decide this request._"
-    await send(text, values, buttons)
+    await cl.Message(text, actions=buttons).send()

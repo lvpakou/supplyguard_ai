@@ -60,17 +60,19 @@ uv run python -m chainlit run src/supplyguard_ai/chat_app.py   # or locally (mac
    > Supplier Atlas Components has announced a 12-day delay for component MC-17. Determine which customer
    > commitments are at risk, investigate alternative sources, and recommend a recovery plan. Additional
    > spending must not exceed €75,000. Do not create a purchase order without approval.
-2. A checklist shows each step as it runs. After about 1 minute (two agents run on Azure) you see:
+2. One line shows the step that is running. After about 1 minute (two agents run on Azure) you see four
+   short messages:
    - **impact**: 3,200 of 5,200 units usable, shortfall 5,350, 77 orders at risk;
-   - **evidence**: the conflicts and how they were settled; every document, and the agents' notes, open in
-     the side panel;
-   - **options compared**: Helios and Borealis are rejected, with the reasons; Delta is flagged because it
+   - **evidence**: how many sources were read, and how each conflict between them was settled;
+   - **options**: the plan; Helios and Borealis are rejected, with the reasons; Delta is flagged because it
      shares Atlas's upstream manufacturer;
-   - the **approval request**: about EUR 30,378, with what to check before approving.
+   - the **approval request**: about EUR 30,378, the exact actions, and the risks you accept.
+
+   For any detail, just ask, e.g. *Which documents did you use?*
 3. Click **Approve**: "Still needed: finance_controller". Nothing is ordered yet.
 4. In a private window sign in as `u-fc-01`, click **Open** on the waiting request, then **Approve**.
    The actions run once in the procurement system; a short summary shows what was done, and the full
-   incident report opens in the side panel.
+   incident report is attached as a file.
 5. Ask follow-ups: *Why did you reject Supplier Helios?* · *What changes if we increase the spending limit to €90,000?*
 6. Also try:
    - **Change** on the approval card ("make the quantity 6,000"): you get a new plan and a new approval;
