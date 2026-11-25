@@ -1,13 +1,13 @@
 """Tests for role 3 (documents and retrieval). These need no Azure, Postgres or Chroma."""
 
-from collections import Counter
 
+import csv
 import pytest
 import psycopg
 
 from supplyguard_ai.state import Evidence
 from supplyguard_ai.auth import scopes_for_role
-from supplyguard_ai.config import database_url
+from supplyguard_ai.config import database_url, data_dir
 from supplyguard_ai.tools import retrieval
 from supplyguard_ai.tools.retrieval import get_embeddings, load_documents, search_documents, extract_facts, find_conflicts
 
@@ -17,12 +17,31 @@ def docs():
     return {d["source_id"]: d for d in load_documents()}
 
 
-def test_all_212_documents_load_once(docs):
-    assert len(docs) == 212
-    assert Counter(d["doc_type"] for d in docs.values()) == {
-        "contract": 61, "qualification": 60, "supplier_notice": 42, "incident_report": 30,
-        "procedure": 12, "email": 6, "finance": 1,
-    }
+KNOWN_TYPES = {"contract", "qualification", "supplier_notice", "incident_report",
+               "procedure", "email", "finance"}
+
+
+def _index_rows():
+    path = data_dir() / "documents" / "documents_index.csv"
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def test_every_document_file_is_in_the_index():
+    root = data_dir()
+    on_disk = {p.relative_to(root).as_posix() for p in (root / "documents").rglob("*.md")}
+    listed = {row["path"] for row in _index_rows()}
+    assert on_disk - listed == set(), "add these files to documents_index.csv"
+    assert listed - on_disk == set(), "these CSV rows have no file"
+
+
+def test_every_listed_document_loads_once(docs):
+    # docs is keyed by source_id, so a duplicate id would make it shorter
+    assert len(docs) == len(_index_rows())
+
+
+def test_only_known_document_types(docs):
+    assert {d["doc_type"] for d in docs.values()} <= KNOWN_TYPES
 
 
 def test_atlas_contract_versions_share_one_base_id(docs):
@@ -85,6 +104,13 @@ live = pytest.mark.skipif(not _index_ready(), reason="needs the services, the in
 
 def ids(results):
     return [r.source_id for r in results]
+
+
+@live
+def test_the_index_matches_the_files():
+    assert retrieval.index_differences() == {
+        "not_indexed": set(), "removed": set(), "changed": set()
+    }, "run: uv run python scripts/index_documents.py"
 
 
 @live

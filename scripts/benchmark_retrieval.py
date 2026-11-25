@@ -1,7 +1,7 @@
 """benchmark_retrieval. OWNER: role 3.
 
 Which search finds the right document: pgvector, ChromaDB or hybrid (pgvector + keywords)?
-20 questions with known answers, plus off-topic questions to calibrate MIN_SIMILARITY.
+30 questions with known answers, plus off-topic questions to calibrate MIN_SIMILARITY.
 Prints markdown tables to paste into docs/retrieval.md.
 
     docker compose up -d
@@ -38,6 +38,18 @@ QUESTIONS = [
     ("exact", "Delta Micro Systems ISO 9001 qualification record", {"DOC-QUA-S005-v1"}),
     ("exact", "HC-001 Borda Industrial MC-300", {"DOC-INC-HC-001"}),
     ("exact", "Quanta Electronics MC-2 notice", {"DOC-NOT-001", "DOC-NOT-025"}),
+    # --- added: coverage of more document types ---
+    ("meaning", "How do we work out what expediting a purchase order costs?", {"DOC-PRO-08-v1"}),
+    ("meaning", "What sections must the final incident report contain?", {"DOC-PRO-09-v1"}),
+    ("meaning", "What do we do if the message doesn't say which supplier is affected?", {"DOC-PRO-01-v1"}),
+    ("meaning", "Are users allowed to see negotiated penalty rates?", {"DOC-PRO-10-v1"}),
+    ("meaning", "Past incidents where the backup supplier was delayed too because of the same upstream manufacturer",
+     {"DOC-INC-HC-009", "DOC-INC-HC-012", "DOC-INC-HC-022"}),
+    ("exact", "Atlas Components committed monthly capacity", {"DOC-CON-S001-v3"}),
+    ("exact", "Helios Supply contract late-delivery penalty", {"DOC-CON-S002-v1"}),
+    ("exact", "Aurum Works MC-203 incident", {"DOC-INC-HC-007"}),
+    ("exact", "CERT-S010-99086", {"DOC-QUA-S010-v1"}),
+    ("exact", "Argo Dynamics MC-33 delay", {"DOC-NOT-010", "DOC-NOT-033"}),
 ]
 # No document answers these: the best similarity here must stay BELOW MIN_SIMILARITY.
 OFF_TOPIC = [
