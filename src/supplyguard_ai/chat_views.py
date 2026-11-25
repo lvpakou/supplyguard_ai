@@ -23,9 +23,9 @@ STEPS = {
     "execute": ("Sending the approved actions", "actions executed"),
     "report": ("Writing the incident report", "report written"),
 }
-_TYPES = {"contract": "contracts", "qualification": "certificates", "supplier_notice": "notices",
-          "email": "e-mails", "procedure": "procedures", "incident_report": "incident reports",
-          "incident_memory": "past cases", "finance": "finance"}
+_TYPES = {"contract": "contract", "qualification": "certificate", "supplier_notice": "notice",
+          "email": "e-mail", "procedure": "procedure", "incident_report": "incident report",
+          "incident_memory": "past case", "finance": "finance sheet"}
 _OPERATIONS = {"request_stock_transfer": "Stock transfer", "expedite_purchase_order": "Expedite order",
                "create_purchase_order": "New purchase order", "update_production_schedule": "Production plan"}
 REPORT_FILE = "incident-report.md"
@@ -90,7 +90,7 @@ def evidence_view(values: dict) -> str:
             kind = _TYPES.get(e.doc_type, e.doc_type)
             counts[kind] = counts.get(kind, 0) + 1
         lines.append(f"- **{_count(len(docs), 'source')} read**, filtered by your role: "
-                     + ", ".join(f"{n} {kind}" for kind, n in counts.items()) + ".")
+                     + ", ".join(_count(n, kind) for kind, n in counts.items()) + ".")
     if conflicts:
         settled = " · ".join(f"{c.topic}: **{c.chosen}**" for c in conflicts)
         lines.append(f"- **{_count(len(conflicts), 'conflict')} between sources settled** (contract > certificate > notice > "

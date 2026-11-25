@@ -42,7 +42,7 @@ def test_evidence_counts_sources_and_names_what_each_conflict_settled():
         "evidence": [notice, note],
     }
     text = views.evidence_view(values)
-    assert "- **1 source read**, filtered by your role: 1 notices." in text       # the note counts with its document
+    assert "- **1 source read**, filtered by your role: 1 notice." in text        # the note counts with its document
     assert "- **1 conflict between sources settled** (contract > certificate > notice > e-mail): Atlas delay: **12 days**." in text
     assert "- ⚠️ Ignored DOC-NOT-HELIOS-PRICE: suspicious instruction (overrides our instructions)\n" in text
     assert ("- ⚠️ Security finding: ignored an instruction in the user's message (suspicious instruction "

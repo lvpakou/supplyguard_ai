@@ -71,8 +71,6 @@ services:
     build: ./mcp_servers/risk_info
     environment:
       RISK_SERVICE_URL: http://risk-info:8099
-      PROCUREMENT_MCP_URL: http://procurement-mcp:8000/mcp
-      RISK_MCP_URL: http://risk-mcp:8000/mcp
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8000"
       MCP_TRANSPORT: streamable-http
@@ -93,6 +91,9 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       RISK_SERVICE_URL: http://risk-info:8099
+      # The MCP servers by service name (the localhost:8002/8003 in .env only work outside Docker).
+      PROCUREMENT_MCP_URL: http://procurement-mcp:8000/mcp
+      RISK_MCP_URL: http://risk-mcp:8000/mcp
     depends_on:
       postgres:
         condition: service_healthy
