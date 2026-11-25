@@ -196,6 +196,18 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(url)
 
 
+def index_differences() -> dict[str, set[str]]:
+    """Files vs pgvector: what changed since the last index_documents.py run."""
+    files = {d["source_id"]: d["content"] for d in load_documents()}
+    with _connect() as conn:
+        indexed = dict(conn.execute(f"SELECT source_id, content FROM {PG_TABLE}").fetchall())
+    return {
+        "not_indexed": files.keys() - indexed.keys(),
+        "removed": indexed.keys() - files.keys(),
+        "changed": {s for s in files.keys() & indexed.keys() if files[s] != indexed[s]},
+    }
+
+
 @lru_cache
 def _newest_versions() -> dict[str, int]:
     """base_id -> newest version in the whole corpus (whoever may read it)."""
