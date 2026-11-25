@@ -60,14 +60,17 @@ uv run python -m chainlit run src/supplyguard_ai/chat_app.py   # or locally (mac
    > Supplier Atlas Components has announced a 12-day delay for component MC-17. Determine which customer
    > commitments are at risk, investigate alternative sources, and recommend a recovery plan. Additional
    > spending must not exceed €75,000. Do not create a purchase order without approval.
-2. After about 1 minute (two agents run on Azure) you see:
+2. A checklist shows each step as it runs. After about 1 minute (two agents run on Azure) you see:
    - **impact**: 3,200 of 5,200 units usable, shortfall 5,350, 77 orders at risk;
-   - **evidence and conflicts**: each document opens in the side panel;
-   - **options compared**: Helios, Borealis and Delta are rejected, with the reasons;
-   - the **approval request**: about EUR 30,378.
+   - **evidence**: the conflicts and how they were settled; every document, and the agents' notes, open in
+     the side panel;
+   - **options compared**: Helios and Borealis are rejected, with the reasons; Delta is flagged because it
+     shares Atlas's upstream manufacturer;
+   - the **approval request**: about EUR 30,378, with what to check before approving.
 3. Click **Approve**: "Still needed: finance_controller". Nothing is ordered yet.
 4. In a private window sign in as `u-fc-01`, click **Open** on the waiting request, then **Approve**.
-   The actions run once in the procurement system and the incident report appears.
+   The actions run once in the procurement system; a short summary shows what was done, and the full
+   incident report opens in the side panel.
 5. Ask follow-ups: *Why did you reject Supplier Helios?* · *What changes if we increase the spending limit to €90,000?*
 6. Also try:
    - **Change** on the approval card ("make the quantity 6,000"): you get a new plan and a new approval;

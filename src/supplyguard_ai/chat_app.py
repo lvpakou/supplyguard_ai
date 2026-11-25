@@ -89,12 +89,16 @@ def _user() -> tuple[str, str]:
 async def greet() -> None:
     user = cl.user_session.get("user")
     scopes = ", ".join(document_scopes(user.identifier))
-    await cl.Message(f"Signed in as **{user.metadata['name']}** ({user.metadata['role']}). "
-                     f"Documents you can see: {scopes}.\n\nDescribe the supply disruption.").send()
+    await cl.Message(
+        f"### 👋 {user.metadata['name']} · {user.metadata['role'].replace('_', ' ')}\n"
+        f"Documents you may read: {scopes}.\n\n"
+        "Describe a supply disruption: supplier, component, delay and budget. I investigate it, compare "
+        "recovery options and ask for approval before anything is ordered.\n\n"
+        "_Type **resume** to reopen a saved case, or **new** to start over._").send()
     waiting = await open_approvals(user.metadata["role"]) if database_url() else []
     if waiting:
-        lines = ["**Approval requests waiting for your role:**"]
-        lines += [f"- {r.approval_id}: EUR {r.total_cost_eur:,.2f} (needs {r.approver_role})" for _, r in waiting]
+        lines = ["### ✍️ Waiting for your approval", ""]
+        lines += [f"- {r.approval_id}: EUR {r.total_cost_eur:,.0f} (needs {r.approver_role})" for _, r in waiting]
         buttons = [cl.Action(name="open_case", label=f"Open {r.approval_id}", payload={"case_id": case_id})
                    for case_id, r in waiting]
         await cl.Message("\n".join(lines), actions=buttons).send()
@@ -137,7 +141,8 @@ async def on_message(message: cl.Message) -> None:
         graph_input = with_user(graph_input, cl.user_session.get("user"))
     elif graph_input is not None and is_decision(message.content) and await pending_approval(thread_id):
         # Typed text never decides an approval: only the checked buttons can. Questions go through.
-        await cl.Message("This case is waiting for an approval decision: please use the buttons.").send()
+        await cl.Message("⏸ This case is waiting for a decision: please use the buttons on the approval "
+                         "request. Questions are welcome.").send()
         await show_case(thread_id)
         return
     if graph_input is not None:
@@ -171,7 +176,7 @@ async def on_resume_case(action: cl.Action) -> None:
     cl.user_session.set("thread_id", case_id)
     snapshot = await (await get_graph()).aget_state(_config(case_id))
     await cl.Message(f"Resumed case {case_id[:8]}: {snapshot.values.get('raw_text', '')}").send()
-    await show_case(case_id)
+    await show_case(case_id, details=True)  # coming back later: show the whole investigation again
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +244,8 @@ async def on_decide(action: cl.Action) -> None:
     if decision == "approve":
         missing = approvals.missing_signoffs(request, await cl.make_async(approvals.decisions)(request.approval_id))
         if missing:
-            await cl.Message(f"Your approval is recorded. Still needed: **{' and '.join(missing)}**. "
-                             "They will find this request when they sign in.").send()
+            await cl.Message(f"✅ Your approval is recorded. Still needed: **{' and '.join(missing)}**: they see "
+                             "this request when they sign in. Nothing is ordered yet.").send()
             return
     await run(Command(resume={"decision": decision, "change": note, "user_id": user_id,
                               "user_role": role, "payload_hash": request.payload_hash}), thread_id)
@@ -253,9 +258,19 @@ async def run(graph_input, thread_id: str) -> None:
     graph = await get_graph()
     asked = len((await graph.aget_state(_config(thread_id))).values.get("followups", []))
     waiting = await pending_approval(thread_id)
+    progress, started = None, []   # one checklist message, updated as the steps start
     async for event in graph.astream(graph_input, _config(thread_id), stream_mode="tasks"):
-        if "input" in event and event["name"] not in {"clarify", "approval", "followup"}:
-            await cl.Message(f"_{event['name']}..._").send()
+        if "input" in event and event["name"] in views.STEPS:
+            started.append(event["name"])
+            if progress is None:
+                progress = cl.Message(views.progress_view(started))
+                await progress.send()
+            else:
+                progress.content = views.progress_view(started)
+                await progress.update()
+    if progress:
+        progress.content = views.progress_view(started, finished=True)
+        await progress.update()
     request = await pending_approval(thread_id)
     if request and request != waiting:  # a new approval round: audit it, and let approvers find it
         user_id, role = _user()
@@ -265,7 +280,7 @@ async def run(graph_input, thread_id: str) -> None:
     followups = snapshot.values.get("followups", [])
     if len(followups) > asked:  # a question was answered: show the answer, the case stays where it was
         note = "\n\n_The approval request above is still waiting for a decision._" if request else ""
-        await cl.Message(followups[-1].answer + note).send()
+        await cl.Message(f"💬 {followups[-1].answer}{note}").send()
         return
     await show(snapshot.values, snapshot.interrupts, details=request is not None and request != waiting)
 
@@ -281,60 +296,38 @@ async def show(values: dict, interrupts, details: bool = False) -> None:
     if payload is None:
         return
     if payload["type"] == "clarification":
-        await cl.Message(payload["question"]).send()
+        await cl.Message(f"❓ {payload['question']}").send()
     elif payload["type"] == "approval":
         if details:
             await show_investigation(values)
         await show_approval(values, ApprovalRequest(**payload["request"]))
     elif payload["type"] == "followup" and values.get("report"):
-        # Answers are shown by run() as they come; here the case is closed: show its report.
-        await cl.Message(values["report"] + "\n\n_Ask a follow-up question, or type **new**._").send()
+        # Answers are shown by run() as they come; here the case is closed: what was done, report on the side.
+        await send(views.closing_view(values), values)
+
+
+async def send(text: str, values: dict, actions: list | None = None) -> None:
+    """A message, with the side panels it names (a document id, "Incident report", ...) attached."""
+    elements = [cl.Text(name=name, content=content, display="side")
+                for name, content in views.side_panels(values).items() if name in text]
+    await cl.Message(text, elements=elements, actions=actions or []).send()
 
 
 async def show_investigation(values: dict) -> None:
-    """Impact, evidence (each source opens its document in the side panel), options compared."""
-    documents = [cl.Text(name=e.source_id, content=e.claim, display="side") for e in views.documents(values)]
-    for text, elements in ((views.impact_view(values), []), (views.evidence_view(values), documents),
-                           (views.options_view(values), [])):
+    """Impact, evidence and options: three short messages, long material in the side panel."""
+    for text in (views.impact_view(values), views.evidence_view(values), views.options_view(values)):
         if text:
-            await cl.Message(text, elements=elements).send()
+            await send(text, values)
 
 
 async def show_approval(values: dict, request: ApprovalRequest) -> None:
-    """The exact actions, quantities, prices and costs the human approves, with evidence."""
-    rec, impact, facts = values["recommendation"], values.get("impact"), values.get("facts")
+    """The exact actions, quantities, prices and costs the human approves, and who must sign."""
     _, role = _user()
-    lines = [f"### Approval request {request.approval_id}", rec.summary, ""]
-    if impact:
-        lines += [f"Usable stock {impact.usable} · shortfall {impact.shortfall_units} units · "
-                  f"{impact.open_orders_at_risk} orders at risk", ""]
-    lines += ["| # | Exact action | Cost (EUR) |", "|---|---|---:|"]
-    actions = [a for option in rec.options for a in option.actions]
-    lines += [f"| {i} | {approvals.describe(a)} | {a.cost_eur:,.2f} |" for i, a in enumerate(actions, 1)]
-    lines += [f"| | **Total** | **{request.total_cost_eur:,.2f}** |", ""]
-    # One bullet per line: markdown would join plain consecutive lines into one paragraph.
-    if facts:
-        lines.append(f"- Spending cap: EUR {facts.spending_cap_eur:,.0f}")
-    if rec.uncovered_units:
-        lines.append(f"- Not covered by this plan: {rec.uncovered_units} units")
-    evidence = sorted({e for option in rec.options for e in option.evidence_ids})
-    if evidence:
-        lines.append("- Evidence: " + ", ".join(evidence))
-    if values.get("critique"):
-        lines += ["", "**Challenge findings:**", ""] + [f"- 🔎 {finding}" for finding in values["critique"]]
-    if values.get("warnings"):
-        lines += ["", "**Warnings:**", ""] + [f"- ⚠️ {warning}" for warning in values["warnings"]]
-
     roles = approvals.required_roles(request.approver_role)
     missing = approvals.missing_signoffs(request, await cl.make_async(approvals.decisions)(request.approval_id))
-    lines += ["", "- **Approval needed from:** " + (" and ".join(roles) or "nobody: above every approval tier")]
-    if roles and len(missing) < len(roles):
-        lines.append("- Already approved by: " + ", ".join(r for r in roles if r not in missing))
-    lines += ["", f"_Payload {request.payload_hash}. Nothing is ordered before approval; "
-                  "any change needs a new approval._"]
-
+    text = views.approval_view(values, request, roles, missing)
     buttons = [cl.Action(name="decide", label=label, payload={"decision": d, "payload_hash": request.payload_hash})
                for d, label in DECISIONS if approvals.can_decide(role, request, d)]
     if not buttons:
-        lines += ["", f"_Your role ({role}) cannot decide this request._"]
-    await cl.Message("\n".join(lines), actions=buttons).send()
+        text += f"\n\n_Your role ({role}) cannot decide this request._"
+    await send(text, values, buttons)
